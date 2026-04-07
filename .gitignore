@@ -1,0 +1,27 @@
+# Dependencies
+.venv/
+venv/
+ENV/
+__pycache__/
+*.py[cod]
+*$py.class
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Secrets
+.env
+*.pfx
+*.cer
+*.pem
+*.key
+.azd/
+*.json
+*.bicepparam.local
+
+# Temporary Files
+*.log
+*.tmp

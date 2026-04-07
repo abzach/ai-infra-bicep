@@ -1,0 +1,36 @@
+# core.yaml — values that are identical across all environments.
+
+variables:
+  location: swedencentral
+
+  containerName: chatapp
+  privateAiWorkspacesOnly: true
+
+  modelDeploymentName: gpt-4-1-mini
+  modelName: gpt-4.1-mini
+  modelVersion: 2025-04-14
+  modelSkuName: GlobalStandard
+
+  secondaryModelDeploymentName: gpt-4o-mini
+  secondaryModelName: gpt-4o-mini
+  secondaryModelVersion: 2024-07-18
+  secondaryModelSkuName: GlobalStandard
+
+  openaiApiVersion: 2025-01-01-preview
+  mlApiVersion: 2025-06-01
+
+  probePrompt: 'Reply with OK only.'
+
+  vmAdminUsername: azureadmin  # Admin username for VMs 
+  vmSpotMaxPrice: -1
+  vmAutoShutdownEnabled: true
+  vmAutoShutdownTime: '0300'
+  vmAutoShutdownTimeZone: 'India Standard Time'
+
+  enableAuditDiagnostics: true
+  logAnalyticsRetentionDays: 30
+  logAnalyticsDailyQuotaGb: 0.5
+
+  tagProject: aistack
+  tagWorkload: enterprise-ai-foundry
+  tagManagedBy: bicep

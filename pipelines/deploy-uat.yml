@@ -1,0 +1,60 @@
+trigger: none
+pr: none
+
+variables:
+  - template: ../variables/uat.yaml
+
+stages:
+  - stage: Planning
+    displayName: Plan phase
+    jobs:
+      - job: WhatIf
+        displayName: Planning
+        pool:
+          vmImage: ubuntu-latest
+        steps:
+          - task: AzureCLI@2
+            displayName: Planning deployment
+            inputs:
+              azureSubscription: $(serviceConnection)
+              scriptType: pscore
+              scriptLocation: scriptPath
+              scriptPath: scripts/deploy.ps1
+              arguments: -EnvironmentSuffix $(environmentSuffix) -WhatIf
+
+  - stage: Deploy
+    displayName: Deploy phase
+    dependsOn: Planning
+    jobs:
+      - job: Deploy
+        displayName: Deploy
+        pool:
+          vmImage: ubuntu-latest
+        steps:
+          - task: AzureCLI@2
+            displayName: Deploying resources
+            inputs:
+              azureSubscription: $(serviceConnection)
+              scriptType: pscore
+              scriptLocation: scriptPath
+              scriptPath: scripts/deploy.ps1
+              arguments: -EnvironmentSuffix $(environmentSuffix)
+
+  - stage: Validate
+    displayName: Validate phase
+    dependsOn: Deploy
+    jobs:
+      - job: PostDeployTests
+        displayName: Validate
+        pool:
+          vmImage: ubuntu-latest
+        steps:
+          - task: AzureCLI@2
+            displayName: Validating deployment
+            continueOnError: true
+            inputs:
+              azureSubscription: $(serviceConnection)
+              scriptType: pscore
+              scriptLocation: scriptPath
+              scriptPath: scripts/test.ps1
+              arguments: -Mode Validate -EnvironmentSuffix $(environmentSuffix)

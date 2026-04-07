@@ -1,0 +1,17 @@
+# dev.yaml — dev environment-specific values
+
+variables:
+  environmentSuffix: dev
+  baseName: mstech # Short prefix used for all resource names (max 5-8 chars)
+
+  skuName: Standard_LRS  # Storage redundancy
+
+  capacityK: 10         # TPM capacity for the primary model deployment
+  secondaryCapacityK: 8 # TPM capacity for the secondary model deployment
+
+  vmUseSpot: true # Set true to use Spot VM pricing (may be evicted under capacity pressure)
+
+  tagEnvironment: dev 
+
+  adminObjectIds: '<REPLACE_WITH_COMMA_SEPARATED_ENTRA_OBJECT_IDS>'   # Required: comma-separated Entra ID object IDs as 'guid1,guid2'
+  serviceConnection: '<REPLACE_WITH_SERVICE_CONNECTION_NAME>'         # Optional: Azure DevOps service connection name used by pipeline

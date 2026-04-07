@@ -1,0 +1,17 @@
+# uat.yaml — uat environment-specific values.
+
+variables:
+  environmentSuffix: uat
+  baseName: mstech # Short prefix used for all resource names (max 5-8 chars)
+
+  skuName: Standard_LRS  # Storage redundancy
+
+  capacityK: 20          # TPM capacity for the primary model deployment
+  secondaryCapacityK: 10 # TPM capacity for the secondary model deployment
+
+  vmUseSpot: false # Set true to use Spot VM pricing (may be evicted under capacity pressure)
+
+  tagEnvironment: uat
+
+  adminObjectIds: '<REPLACE_WITH_COMMA_SEPARATED_ENTRA_OBJECT_IDS>'   # Required: comma-separated Entra ID object IDs as 'guid1,guid2'
+  serviceConnection: '<REPLACE_WITH_SERVICE_CONNECTION_NAME>'         # Optional: Azure DevOps service connection name used by pipeline

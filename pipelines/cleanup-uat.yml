@@ -1,0 +1,42 @@
+trigger: none
+pr: none
+
+variables:
+  - template: ../variables/uat.yaml
+
+stages:
+  - stage: Preview
+    displayName: Preview resources
+    jobs:
+      - job: Preview
+        displayName: Preview deletions
+        pool:
+          vmImage: ubuntu-latest
+        steps:
+          - task: AzureCLI@2
+            displayName: Preview cleanup
+            inputs:
+              azureSubscription: $(serviceConnection)
+              scriptType: pscore
+              scriptLocation: scriptPath
+              scriptPath: scripts/cleanup.ps1
+              arguments: -EnvironmentSuffix $(environmentSuffix) -WhatIf
+
+  - stage: Destroy
+    displayName: Destroy resources
+    dependsOn: Preview
+    jobs:
+      - job: Destroy
+        displayName: Delete resource groups
+        pool:
+          vmImage: ubuntu-latest
+        steps:
+          - task: AzureCLI@2
+            displayName: Delete resource groups
+            inputs:
+              azureSubscription: $(serviceConnection)
+              scriptType: pscore
+              scriptLocation: scriptPath
+              scriptPath: scripts/cleanup.ps1
+              arguments: -EnvironmentSuffix $(environmentSuffix) -Force
+
