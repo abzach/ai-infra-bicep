@@ -152,7 +152,8 @@ var keyVaultName             = 'kv-${baseName}-${environmentSuffix}-${nameSuffix
 var openAiAccountName        = 'oai-${baseName}-${environmentSuffix}-${nameSuffix}'
 var hubName                  = 'hub-${baseName}-${environmentSuffix}-${nameSuffix}'
 var projectName              = 'proj-${baseName}-${environmentSuffix}-${nameSuffix}'
-var managedIdentityName      = 'mi-${baseName}-${environmentSuffix}-${nameSuffix}'
+var hubManagedIdentityName   = 'mi-${baseName}-hub-${environmentSuffix}-${nameSuffix}'
+var vmManagedIdentityName    = 'mi-${baseName}-vm-${environmentSuffix}-${nameSuffix}'
 var vnetName                 = 'vnet-${baseName}-${environmentSuffix}-${nameSuffix}'
 var vmName                   = 'vm-${baseName}-${environmentSuffix}-${nameSuffix}'
 var lawWorkspaceName         = 'law-${baseName}-${environmentSuffix}-${nameSuffix}'
@@ -182,11 +183,21 @@ module networkModule '../modules/network.bicep' = {
   }
 }
 
-module managedIdentityModule '../modules/managedidentity.bicep' = {
-  name: 'managedIdentityDeployment'
+module hubManagedIdentityModule '../modules/managedidentity.bicep' = {
+  name: 'hubManagedIdentityDeployment'
   scope: coreRg
   params: {
-    identityName: managedIdentityName
+    identityName: hubManagedIdentityName
+    location: location
+    tags: effectiveTags
+  }
+}
+
+module vmManagedIdentityModule '../modules/managedidentity.bicep' = {
+  name: 'vmManagedIdentityDeployment'
+  scope: coreRg
+  params: {
+    identityName: vmManagedIdentityName
     location: location
     tags: effectiveTags
   }
@@ -263,7 +274,8 @@ module managedIdentityRolesModule '../modules/managedidentityroles.bicep' = {
     storageAccountName: storageAccountName
     keyVaultName: keyVaultName
     openAiAccountName: openAiAccountName
-    identityPrincipalId: managedIdentityModule.outputs.principalId
+    hubIdentityPrincipalId: hubManagedIdentityModule.outputs.principalId
+    vmIdentityPrincipalId: vmManagedIdentityModule.outputs.principalId
   }
   dependsOn: [
     storageModule
@@ -324,7 +336,7 @@ module aiHubModule '../modules/aihub.bicep' = {
     keyVaultResourceId: keyVaultModule.outputs.id
     openAiEndpoint: openAiModule.outputs.endpoint
     openAiResourceId: openAiModule.outputs.id
-    identityId: managedIdentityModule.outputs.id
+    identityId: hubManagedIdentityModule.outputs.id
     logAnalyticsWorkspaceResourceId: lawModule.outputs.id
     tags: effectiveTags
   }
@@ -361,7 +373,7 @@ module vmModule '../modules/vm.bicep' = {
   params: {
     vmName: vmName
     location: location
-    identityId: managedIdentityModule.outputs.id
+    identityId: vmManagedIdentityModule.outputs.id
     nicId: networkModule.outputs.nicId
     keyVaultUrl: keyVaultModule.outputs.vaultUri
     keyVaultResourceId: keyVaultModule.outputs.id
@@ -382,9 +394,12 @@ output deploymentName string = openAiModule.outputs.deploymentName
 output secondaryDeploymentName string = openAiModule.outputs.secondaryDeploymentName
 output hubName string = aiHubModule.outputs.name
 output projectName string = aiProjectModule.outputs.name
-output managedIdentityId string = managedIdentityModule.outputs.id
-output managedIdentityPrincipalId string = managedIdentityModule.outputs.principalId
-output managedIdentityClientId string = managedIdentityModule.outputs.clientId
+output hubManagedIdentityId string = hubManagedIdentityModule.outputs.id
+output hubManagedIdentityPrincipalId string = hubManagedIdentityModule.outputs.principalId
+output hubManagedIdentityClientId string = hubManagedIdentityModule.outputs.clientId
+output vmManagedIdentityId string = vmManagedIdentityModule.outputs.id
+output vmManagedIdentityPrincipalId string = vmManagedIdentityModule.outputs.principalId
+output vmManagedIdentityClientId string = vmManagedIdentityModule.outputs.clientId
 output vnetId string = networkModule.outputs.id
 output vmName string = vmModule.outputs.vmName
 output vmPublicIpAddress string = networkModule.outputs.publicIpAddress

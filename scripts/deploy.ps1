@@ -694,6 +694,7 @@ if ($LASTEXITCODE -ne 0) {
     exit 1
 }
 
+Register-RequiredResourceProviders -SubscriptionId $subscriptionId
 
 Write-Task "Loading environment configuration for '$EnvironmentSuffix'..."
 $config = Read-EnterpriseEnvironmentConfig -ScriptRoot $scriptRoot -EnvironmentSuffix $EnvironmentSuffix -NameSuffix $NameSuffix
@@ -741,7 +742,9 @@ $containerName       = $config.containerName
 $keyVaultName        = $config.keyVaultName
 $openAiAccountName   = $config.openAiAccountName
 $vmName              = $config.vmName
-$managedIdentityName = $config.managedIdentityName
+$hubManagedIdentityName = $config.hubManagedIdentityName
+$vmManagedIdentityName = $config.vmManagedIdentityName
+$legacyManagedIdentityName = $config.legacyManagedIdentityName
 
 $tenantIdRaw = az account show --query tenantId --output tsv 2>$null
 $tenantId = if (-not [string]::IsNullOrWhiteSpace($tenantIdRaw)) { $tenantIdRaw.Trim() } else { '' }
@@ -1214,18 +1217,24 @@ if ($vmExists) {
     Write-Exists "  VM '$vmName' does not exist yet — fresh deploy."
 }
 
-$miPrincipalId = az identity show `
-    --resource-group $CoreResourceGroupName `
-    --name $managedIdentityName `
-    --query principalId `
-    --output tsv 2>$null
-if ($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace($miPrincipalId)) {
-    Write-Task 'Removing stale managed identity role assignments before deployment...'
-    $miRoleGuids = @(
-        'ba92f5b4-2d11-453d-a403-e96b0029c9fe'
-        '4633458b-17de-408a-b874-0445c86b69e6'
-        '5e0bd9bd-7b93-4f28-af87-19fc36ad61bd'
-    )
+$identityNamesForRoleCleanup = @($hubManagedIdentityName, $vmManagedIdentityName, $legacyManagedIdentityName)
+$miRoleGuids = @(
+    'ba92f5b4-2d11-453d-a403-e96b0029c9fe'
+    '2a2b9908-6ea1-4ae2-8e65-a410df84e7d1'
+    '4633458b-17de-408a-b874-0445c86b69e6'
+    '5e0bd9bd-7b93-4f28-af87-19fc36ad61bd'
+)
+foreach ($identityNameForRoleCleanup in $identityNamesForRoleCleanup) {
+    $miPrincipalId = az identity show `
+        --resource-group $CoreResourceGroupName `
+        --name $identityNameForRoleCleanup `
+        --query principalId `
+        --output tsv 2>$null
+    if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($miPrincipalId)) {
+        continue
+    }
+
+    Write-Task "Removing stale role assignments for managed identity '$identityNameForRoleCleanup' before deployment..."
     foreach ($roleGuid in $miRoleGuids) {
         $existingAssignmentsJson = az role assignment list `
             --assignee $miPrincipalId `
@@ -1239,7 +1248,7 @@ if ($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace($miPrincipalId)) 
                 if (-not [string]::IsNullOrWhiteSpace($assignmentId)) {
                     az role assignment delete --ids $assignmentId --output none
                     if ($LASTEXITCODE -eq 0) {
-                        Write-Exists "  Removed role '$roleGuid'."
+                        Write-Exists "  Removed role '$roleGuid' from '$identityNameForRoleCleanup'."
                     }
                 }
             }
@@ -1297,6 +1306,24 @@ if ($null -eq $deploymentOutputs) {
     Write-Info 'Warning: could not read deployment outputs. Falling back to derived defaults.'
 }
 
+$legacyIdentityId = az identity show `
+    --resource-group $CoreResourceGroupName `
+    --name $legacyManagedIdentityName `
+    --query id `
+    --output tsv 2>$null
+if ($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace($legacyIdentityId)) {
+    Write-Task "Removing retired shared managed identity '$legacyManagedIdentityName'..."
+    az identity delete `
+        --resource-group $CoreResourceGroupName `
+        --name $legacyManagedIdentityName `
+        --output none
+    if ($LASTEXITCODE -ne 0) {
+        Write-Error "Failed to remove retired shared managed identity '$legacyManagedIdentityName'."
+        exit 1
+    }
+    Write-Exists "  Retired shared managed identity '$legacyManagedIdentityName' removed."
+}
+
 $keyVaultUrl = (Get-DeploymentOutputValue -Outputs $deploymentOutputs -Name 'keyVaultUri').Trim()
 if ([string]::IsNullOrWhiteSpace($keyVaultUrl)) {
     $keyVaultUrl = "https://${keyVaultName}.vault.azure.net/"
@@ -1308,11 +1335,11 @@ if ([string]::IsNullOrWhiteSpace($openAiEndpoint)) {
 }
 $openAiDeployment = (Get-DeploymentOutputValue -Outputs $deploymentOutputs -Name 'deploymentName').Trim()
 $openAiSecondaryDeployment = (Get-DeploymentOutputValue -Outputs $deploymentOutputs -Name 'secondaryDeploymentName').Trim()
-$managedIdentityClientId = (Get-DeploymentOutputValue -Outputs $deploymentOutputs -Name 'managedIdentityClientId').Trim()
+$managedIdentityClientId = (Get-DeploymentOutputValue -Outputs $deploymentOutputs -Name 'vmManagedIdentityClientId').Trim()
 $logAnalyticsWorkspaceId = (Get-DeploymentOutputValue -Outputs $deploymentOutputs -Name 'logAnalyticsWorkspaceId').Trim()
 $logAnalyticsWorkspaceName = (Get-DeploymentOutputValue -Outputs $deploymentOutputs -Name 'logAnalyticsWorkspaceName').Trim()
 if ([string]::IsNullOrWhiteSpace($managedIdentityClientId)) {
-    $managedIdentityClientIdRaw = az identity show --resource-group $CoreResourceGroupName --name $managedIdentityName --query clientId --output tsv 2>$null
+    $managedIdentityClientIdRaw = az identity show --resource-group $CoreResourceGroupName --name $vmManagedIdentityName --query clientId --output tsv 2>$null
     $managedIdentityClientId = if (-not [string]::IsNullOrWhiteSpace($managedIdentityClientIdRaw)) { $managedIdentityClientIdRaw.Trim() } else { '' }
 }
 
@@ -1742,7 +1769,7 @@ if ($localContentHash -eq $storedContentHash -and -not $ForceAppBootstrap) {
 
     $managedIdentityClientId = az identity show `
         --resource-group $CoreResourceGroupName `
-        --name $managedIdentityName `
+        --name $vmManagedIdentityName `
         --query clientId -o tsv
 
     $blobBase = "https://${storageAccountName}.blob.core.windows.net/${containerName}"

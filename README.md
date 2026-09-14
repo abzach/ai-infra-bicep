@@ -171,10 +171,10 @@ deploy.ps1 -EnvironmentSuffix dev
 - NIC is associated with an NSG.
 - NSG rules are generated from deployer allow list: allow RDP from approved CIDRs at priorities starting at `200`, then deny all other RDP at priority `4096`.
 
-## 3. Managed identity
+## 3. Managed identities
 
-- User-assigned managed identity created in core resource group.
-- The identity is later attached to the VM and set as the primary user-assigned identity for the AI Hub.
+- A dedicated user-assigned identity is attached to the VM runtime.
+- A separate user-assigned identity is set as the primary identity for the AI Hub.
 
 ## 4. Storage account
 
@@ -221,9 +221,8 @@ deploy.ps1 -EnvironmentSuffix dev
 
 ## 8. Role assignments
 
-- User-assigned managed identity is granted `Storage Blob Data Contributor` on the storage account.
-- Same identity is granted `Key Vault Secrets User` on the Key Vault.
-- Same identity is granted `Cognitive Services OpenAI User` on the Azure OpenAI account.
+- The AI Hub identity is granted `Storage Blob Data Contributor`, `Key Vault Secrets User`, and `Cognitive Services OpenAI User`.
+- The VM identity is granted `Storage Blob Data Reader`, `Key Vault Secrets User`, and `Cognitive Services OpenAI User`.
 
 ## 9. Private endpoints
 
@@ -279,4 +278,4 @@ deploy.ps1 -EnvironmentSuffix dev
 - Storage account keys are retrieved contextually during script execution and securely logged within the Key Vault.
 - Deployment uploads application artifacts alongside a dynamically populated `first-run.ps1` script to the private blob container and applies the VM Custom Script Extension.
 - `first-run.ps1` runs securely within the VM deployment context, generating `.env` contents dynamically.
-- VM runtime receives `AZURE_CLIENT_ID` so `DefaultAzureCredential` resolves to the user-assigned identity instead of the system-assigned identity.
+- VM runtime receives its dedicated `AZURE_CLIENT_ID` so `DefaultAzureCredential` resolves to the VM identity instead of the system-assigned identity.

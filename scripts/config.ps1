@@ -33,7 +33,7 @@ function Convert-ConfigScalar {
 #   Returns a pscustomobject with properties:
 #     coreResourceGroupName, networkResourceGroupName, storageAccountName,
 #     keyVaultName, openAiAccountName, hubName, projectName,
-#     managedIdentityName, vnetName, vmName, lawWorkspaceName
+#     hubManagedIdentityName, vmManagedIdentityName, vnetName, vmName, lawWorkspaceName
 # ---------------------------------------------------------------------------
 function Get-EnterpriseResourceNames {
     param(
@@ -55,7 +55,9 @@ function Get-EnterpriseResourceNames {
         openAiAccountName        = "oai-${n}-${env}${sfx}"
         hubName                  = "hub-${n}-${env}${sfx}"
         projectName              = "proj-${n}-${env}${sfx}"
-        managedIdentityName      = "mi-${n}-${env}${sfx}"
+        hubManagedIdentityName   = "mi-${n}-hub-${env}${sfx}"
+        vmManagedIdentityName    = "mi-${n}-vm-${env}${sfx}"
+        legacyManagedIdentityName = "mi-${n}-${env}${sfx}"
         vnetName                 = "vnet-${n}-${env}${sfx}"
         vmName                   = "vm-${n}-${env}${sfx}"
         lawWorkspaceName         = "law-${n}-${env}${sfx}"

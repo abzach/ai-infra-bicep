@@ -218,7 +218,9 @@ if ($Mode -eq 'Validate' -or $Mode -eq 'Smoke') {
     $openAiAccountName        = $config.openAiAccountName
     $hubName                  = $config.hubName
     $projectName              = $config.projectName
-    $managedIdentityName      = $config.managedIdentityName
+    $hubManagedIdentityName   = $config.hubManagedIdentityName
+    $vmManagedIdentityName    = $config.vmManagedIdentityName
+    $legacyManagedIdentityName = $config.legacyManagedIdentityName
     $vnetName                 = $config.vnetName
     $vmName                   = $config.vmName
 
@@ -282,9 +284,17 @@ if ($Mode -eq 'Validate' -or $Mode -eq 'Smoke') {
     if (-not $project) { Write-Needed "Fail: AI Project '$projectName' not found"; $passed = $false }
     else { Write-Exists "Pass: AI Project '$projectName' exists" }
 
-    $managedIdentity = az identity show --name $managedIdentityName --resource-group $CoreResourceGroupName --output json 2>$null | ConvertFrom-Json
-    if (-not $managedIdentity) { Write-Needed "Fail: managed identity '$managedIdentityName' not found"; $passed = $false }
-    else { Write-Exists "Pass: managed identity '$managedIdentityName' exists" }
+    $hubManagedIdentity = az identity show --name $hubManagedIdentityName --resource-group $CoreResourceGroupName --output json 2>$null | ConvertFrom-Json
+    if (-not $hubManagedIdentity) { Write-Needed "Fail: AI Hub managed identity '$hubManagedIdentityName' not found"; $passed = $false }
+    else { Write-Exists "Pass: AI Hub managed identity '$hubManagedIdentityName' exists" }
+
+    $vmManagedIdentity = az identity show --name $vmManagedIdentityName --resource-group $CoreResourceGroupName --output json 2>$null | ConvertFrom-Json
+    if (-not $vmManagedIdentity) { Write-Needed "Fail: VM managed identity '$vmManagedIdentityName' not found"; $passed = $false }
+    else { Write-Exists "Pass: VM managed identity '$vmManagedIdentityName' exists" }
+
+    $legacyManagedIdentity = az identity show --name $legacyManagedIdentityName --resource-group $CoreResourceGroupName --output json 2>$null | ConvertFrom-Json
+    if ($legacyManagedIdentity) { Write-Needed "Fail: retired shared managed identity '$legacyManagedIdentityName' still exists"; $passed = $false }
+    else { Write-Exists 'Pass: retired shared managed identity is absent' }
 
     $vnet = az network vnet show --name $vnetName --resource-group $NetworkResourceGroupName --output json 2>$null | ConvertFrom-Json
     if (-not $vnet) { Write-Needed "Fail: virtual network '$vnetName' not found in '$NetworkResourceGroupName'"; $passed = $false }
@@ -594,23 +604,33 @@ Write-Host 'LAUNCHER_VALIDATION_OK'
         }
     }
 
-    # ---- F1: Managed identity role assignments ----
-    if ($managedIdentity) {
-        $requiredRoles = @(
+    # ---- F1: Workload-specific managed identity role assignments ----
+    $identityRoleRequirements = @(
+        [pscustomobject]@{ Identity = $hubManagedIdentity; Name = 'AI Hub managed identity'; Roles = @(
             [pscustomobject]@{ Id = 'ba92f5b4-2d11-453d-a403-e96b0029c9fe'; Name = 'Storage Blob Data Contributor' },
             [pscustomobject]@{ Id = '4633458b-17de-408a-b874-0445c86b69e6'; Name = 'Key Vault Secrets User' },
             [pscustomobject]@{ Id = '5e0bd9bd-7b93-4f28-af87-19fc36ad61bd'; Name = 'Cognitive Services OpenAI User' }
-        )
-        $assignments = az role assignment list --assignee $managedIdentity.principalId --all --output json 2>$null | ConvertFrom-Json
+        ) },
+        [pscustomobject]@{ Identity = $vmManagedIdentity; Name = 'VM managed identity'; Roles = @(
+            [pscustomobject]@{ Id = '2a2b9908-6ea1-4ae2-8e65-a410df84e7d1'; Name = 'Storage Blob Data Reader' },
+            [pscustomobject]@{ Id = '4633458b-17de-408a-b874-0445c86b69e6'; Name = 'Key Vault Secrets User' },
+            [pscustomobject]@{ Id = '5e0bd9bd-7b93-4f28-af87-19fc36ad61bd'; Name = 'Cognitive Services OpenAI User' }
+        ) }
+    )
+    foreach ($identityRoleRequirement in $identityRoleRequirements) {
+        if (-not $identityRoleRequirement.Identity) {
+            continue
+        }
+        $assignments = az role assignment list --assignee $identityRoleRequirement.Identity.principalId --all --output json 2>$null | ConvertFrom-Json
         $rbacFailed = $false
-        foreach ($role in $requiredRoles) {
+        foreach ($role in $identityRoleRequirement.Roles) {
             $found = $assignments | Where-Object { $_.roleDefinitionId -like "*$($role.Id)" }
             if (-not $found) {
-                Write-Needed "Fail: managed identity missing role '$($role.Name)' ($($role.Id))"; $passed = $false; $rbacFailed = $true
+                Write-Needed "Fail: $($identityRoleRequirement.Name) missing role '$($role.Name)' ($($role.Id))"; $passed = $false; $rbacFailed = $true
             }
         }
         if (-not $rbacFailed) {
-            Write-Exists 'Pass: managed identity has all 3 required role assignments'
+            Write-Exists "Pass: $($identityRoleRequirement.Name) has all required roles"
         }
     }
 
@@ -661,7 +681,7 @@ Write-Host 'LAUNCHER_VALIDATION_OK'
 if ($Mode -eq 'Smoke') {
     Write-Task 'Step 3/3: Probing model endpoint from inside the VM...'
 
-    $smokeMiClientId = (az identity show --name $config.managedIdentityName --resource-group $CoreResourceGroupName --query clientId --output tsv 2>$null).Trim()
+    $smokeMiClientId = (az identity show --name $config.vmManagedIdentityName --resource-group $CoreResourceGroupName --query clientId --output tsv 2>$null).Trim()
 
     $smokeScript = @'
 
@@ -734,14 +754,14 @@ if ($Mode -eq 'ChatDual') {
     $keyVaultName          = $config.keyVaultName
     $CoreResourceGroupName = $config.coreResourceGroupName
     $OpenaiApiVersion      = $config.openaiApiVersion
-    $managedIdentityName   = $config.managedIdentityName
+    $vmManagedIdentityName = $config.vmManagedIdentityName
 
-    $clientId = (az identity show --name $managedIdentityName --resource-group $CoreResourceGroupName --query clientId --output tsv 2>$null)
+    $clientId = (az identity show --name $vmManagedIdentityName --resource-group $CoreResourceGroupName --query clientId --output tsv 2>$null)
     if (-not $clientId) {
-        Write-Warning "Could not retrieve client ID for '$managedIdentityName'. Test will default to system assigned identity."
+        Write-Warning "Could not retrieve client ID for '$vmManagedIdentityName'. Test will default to system assigned identity."
         $clientId = ""
     } else {
-        Write-Host "Using user assigned identity '$managedIdentityName' (client ID: $clientId)..."
+        Write-Host "Using VM managed identity '$vmManagedIdentityName' (client ID: $clientId)..."
     }
 
     Write-Host "Testing dual-model chat connectivity on VM '$vmName'..."

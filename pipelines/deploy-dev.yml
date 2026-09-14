@@ -5,8 +5,31 @@ variables:
   - template: ../variables/dev.yaml
 
 stages:
+  - stage: Security
+    displayName: Security gate
+    jobs:
+      - job: StaticSecurityChecks
+        displayName: Bicep validation and security scanning
+        pool:
+          vmImage: ubuntu-latest
+        steps:
+          - task: PowerShell@2
+            displayName: Build and lint Bicep
+            inputs:
+              targetType: filePath
+              filePath: scripts/test.ps1
+              arguments: -Mode Static
+              pwsh: true
+          - task: PowerShell@2
+            displayName: Scan generated IaC template
+            inputs:
+              targetType: filePath
+              filePath: scripts/security-scan.ps1
+              pwsh: true
+
   - stage: Planning
     displayName: Plan phase
+    dependsOn: Security
     jobs:
       - job: WhatIf
         displayName: Planning

@@ -98,6 +98,76 @@ function Get-AzureResourcesByFilter {
     }
 }
 
+# ---------------------------------------------------------------------------
+# Register-RequiredResourceProviders
+#   Checks the registration state of every Azure resource provider namespace
+#   used by the bicep templates in this repo, and registers any that are
+#   NotRegistered. Waits (with backoff) for registration to finish so the
+#   subsequent deployment doesn't fail with a "MissingSubscriptionRegistration"
+#   error.
+#
+#   Parameters
+#     SubscriptionId   Subscription to check/register providers against
+#     ProviderNamespaces  Optional override of the namespace list
+# ---------------------------------------------------------------------------
+function Register-RequiredResourceProviders {
+    param(
+        [Parameter(Mandatory)] [string] $SubscriptionId,
+        [string[]] $ProviderNamespaces = @(
+            'Microsoft.Resources',
+            'Microsoft.Authorization',
+            'Microsoft.ManagedIdentity',
+            'Microsoft.KeyVault',
+            'Microsoft.Storage',
+            'Microsoft.Network',
+            'Microsoft.Compute',
+            'Microsoft.CognitiveServices',
+            'Microsoft.MachineLearningServices',
+            'Microsoft.OperationalInsights',
+            'Microsoft.Insights',
+            'Microsoft.DevTestLab'
+        )
+    )
+
+    Write-Task 'Checking required Azure resource provider registrations...'
+
+    $providersPendingRegistration = [System.Collections.Generic.List[string]]::new()
+
+    foreach ($namespace in $ProviderNamespaces) {
+        $state = az provider show --namespace $namespace --subscription $SubscriptionId --query registrationState --output tsv 2>$null
+        if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($state)) {
+            Write-Info "  Warning: could not read registration state for '$namespace' (non-fatal)."
+            continue
+        }
+
+        if ($state -eq 'Registered') {
+            Write-Exists "  $namespace already registered."
+        } else {
+            Write-Needed "  $namespace is '$state' - registering..."
+            az provider register --namespace $namespace --subscription $SubscriptionId --wait --output none 2>$null
+            if ($LASTEXITCODE -eq 0) {
+                Write-Exists "  $namespace registration requested."
+            } else {
+                Write-Info "  Warning: failed to request registration for '$namespace' (non-fatal)."
+            }
+            $providersPendingRegistration.Add($namespace)
+        }
+    }
+
+    foreach ($namespace in $providersPendingRegistration) {
+        $isRegistered = Wait-WithBackoff -OperationName "Registering $namespace" -MaxWaitSeconds 300 -Condition {
+            $state = az provider show --namespace $namespace --subscription $SubscriptionId --query registrationState --output tsv 2>$null
+            return $state -eq 'Registered'
+        }
+
+        if ($isRegistered) {
+            Write-Exists "  $namespace registration completed."
+        } else {
+            Write-Info "  Warning: $namespace registration did not complete within the timeout (non-fatal, deployment may fail)."
+        }
+    }
+}
+
 function Remove-ResourceGroupLocks {
     param(
         [Parameter(Mandatory)] [string] $ResourceGroupName
