@@ -1,0 +1,12 @@
+{
+  "servers": {
+    "bicep": {
+      "type": "stdio",
+      "command": "dnx",
+      "args": [
+        "-y",
+        "Azure.Bicep.McpServer"
+      ]
+    }
+  }
+}

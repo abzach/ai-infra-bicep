@@ -16,6 +16,7 @@ This repository deploys a private Azure AI Foundry learning environment with sta
 - `scripts/security-scan.ps1` validates generated IaC security invariants.
 - `scripts/cleanup.ps1` deletes only tag-validated environment resource groups.
 - `app/` contains the managed-identity Python chat and connectivity test.
+- `.mcp.json` and `.vscode/mcp.json` register the official Bicep MCP server (`Azure.Bicep.McpServer` via `dnx`) for schema lookups, best practices, diagnostics, formatting, AVM metadata, and ARM decompilation; see `.github/instructions/bicep-mcp-server.instructions.md`.
 
 ## Required invariants
 
@@ -67,3 +68,5 @@ Also parse changed PowerShell files, run `git diff --check`, and inspect `git st
 ## Documentation
 
 Every maintained source folder contains `README.md` for detail and `index.md` for navigation. Update both when responsibilities or file inventories change. Use repository-relative links and never place machine-specific paths, subscription IDs, credentials, or deployment-plan evidence in tracked documentation.
+
+Documentation updates are mandatory, not optional: whenever you change Bicep, scripts, app code, workflows/pipelines, variables, or instruction files, update every doc that describes the changed behavior in the same change. Treat a stale doc as a bug caused by that change. See `.github/instructions/documentation-sync.instructions.md` for the full doc-to-code mapping and rules.

@@ -326,3 +326,7 @@ Ensure the active Azure CLI subscription matches `$subscriptionId` before runnin
 - Deployment packages application files locally and transfers them through Azure VM Run Command; it does not require Storage data-plane access from the deployment host.
 - On first desktop launch, `first-run.ps1` authenticates the administrator with Azure CLI, reads configuration from Key Vault through the private endpoint, writes `C:\ChatApp\.env`, and starts the app.
 - VM runtime receives its dedicated `AZURE_CLIENT_ID` so `DefaultAzureCredential` resolves to the VM identity instead of the system-assigned identity.
+
+## Keeping this documentation current
+
+This README must be updated in the same change as any Bicep, script, app, workflow, or configuration change it describes. See [.github/instructions/documentation-sync.instructions.md](.github/instructions/documentation-sync.instructions.md) for the full doc-to-code mapping, and [.github/instructions/bicep-mcp-server.instructions.md](.github/instructions/bicep-mcp-server.instructions.md) for using the official Bicep MCP server registered in [.mcp.json](.mcp.json).

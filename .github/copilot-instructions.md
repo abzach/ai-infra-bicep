@@ -10,7 +10,9 @@ This repository deploys a private Azure AI Foundry learning environment with Bic
 - When adding or changing a setting, wire it through YAML configuration, `scripts/config.ps1`, `scripts/deploy.ps1`, `bicep/templates/main.bicep`, affected modules, tests, and docs.
 - Do not use Key Vault or Storage data-plane operations from the deployment host. Deployment writes Key Vault secret resources through ARM and transfers app files through VM Run Command.
 - Never print, persist, or commit secrets. Local credential handoff files must remain under ignored `.local/`.
-- Update both `README.md` and `index.md` files when a maintained folder's responsibilities or inventory changes.
+- Update both `README.md` and `index.md` files when a maintained folder's responsibilities or inventory changes. Docs must stay current with the code that changed in the same change; see `instructions/documentation-sync.instructions.md`. Treat a stale doc as a bug in the change that caused it.
+- For Bicep resource schemas, best practices, diagnostics, formatting, AVM lookup, or ARM decompilation, use the official Bicep MCP server registered in `.mcp.json`/`.vscode/mcp.json`; see `instructions/bicep-mcp-server.instructions.md` for which tool applies to which task.
+- Every file under `instructions/*.instructions.md` is self-improving: if a task needs steps beyond what a skill documents, update that skill file with what you learned before finishing the task.
 
 ## Required validation
 

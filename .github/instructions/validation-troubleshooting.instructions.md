@@ -11,4 +11,9 @@ applyTo: "scripts/test.ps1,scripts/security-scan.ps1,scripts/deploy.ps1,scripts/
 - Use `git diff --check` to catch whitespace issues.
 - Do not run `scripts\cleanup.ps1` without explicit approval; use `-WhatIf` first.
 - When troubleshooting, preserve evidence from Azure CLI errors and deployment outputs, but do not commit tenant IDs, subscription IDs, credentials, or local logs.
+- Use the Bicep MCP server's `get_bicep_file_diagnostics` to cross-check `.bicep` files before/alongside `test.ps1 -Mode Static`; see `bicep-mcp-server.instructions.md`.
+
+## Keep this skill current
+
+If this task needed steps beyond what is listed above, add them to this file before finishing so future validation/troubleshooting work benefits.
 

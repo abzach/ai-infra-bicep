@@ -96,3 +96,5 @@ Deactivate the virtual environment when done:
 ```powershell
 deactivate
 ```
+
+Update this README whenever the app's runtime behavior, environment variables, or dependencies change; see [../.github/instructions/documentation-sync.instructions.md](../.github/instructions/documentation-sync.instructions.md).

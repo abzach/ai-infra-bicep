@@ -10,3 +10,5 @@ Manual multi-stage pipelines are provided for `dev` and `uat`.
 | `cleanup-uat.yml` | Guarded deletion of uat resource groups |
 
 Each pipeline imports the matching YAML under `variables/` and uses its `serviceConnection`. Define `vmAdminPassword` as a protected secret variable or variable-group value. Deployment passes it to `-VmAdminPassword` and suppresses credential output in CI.
+
+Update this README whenever a pipeline is added or its stages change; see [../.github/instructions/documentation-sync.instructions.md](../.github/instructions/documentation-sync.instructions.md).

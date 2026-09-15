@@ -12,4 +12,10 @@ applyTo: "**/*.bicep,scripts/**/*.ps1,app/**/*.py,.github/workflows/**/*.yml,pip
 - Keep RDP source CIDRs explicit and retain the deny-all RDP rule.
 - Ensure new scripts and workflows never echo passwords, tokens, tenant-specific secrets, or generated credential files.
 - Update `scripts/security-scan.ps1` and docs for every new invariant that future reviews should enforce.
+- Use the Bicep MCP server's `get_bicep_best_practices` and `get_bicep_file_diagnostics` tools when reviewing `.bicep` files for security regressions; see `bicep-mcp-server.instructions.md`.
+- Update every doc affected by a security-relevant change in the same change; see `documentation-sync.instructions.md`.
+
+## Keep this skill current
+
+If this review needed steps beyond what is listed above, add them to this file before finishing so future security reviews benefit.
 

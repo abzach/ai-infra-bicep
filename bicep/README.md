@@ -13,3 +13,5 @@ Build and lint all templates with:
 ```
 
 Do not commit generated JSON output or parameter files containing secrets.
+
+This README must stay current with `bicep/**`. Update it in the same change as any module addition/removal; see [../.github/instructions/documentation-sync.instructions.md](../.github/instructions/documentation-sync.instructions.md). For resource schema lookups, best practices, diagnostics, and formatting, use the Bicep MCP server described in [../.github/instructions/bicep-mcp-server.instructions.md](../.github/instructions/bicep-mcp-server.instructions.md).

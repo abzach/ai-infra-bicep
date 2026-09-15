@@ -10,4 +10,9 @@ applyTo: "app/**/*.py,app/requirements.txt,app/.env.example,scripts/setup.ps1,sc
 - If runtime configuration changes, update `.env.example`, `app/README.md`, secret sync in `deploy.ps1`, and config-version hashing.
 - If deployed files change, ensure the app content hash changes so `deploy.ps1` reboots the VM package only when needed.
 - Validate Python changes with the smallest local parse/test available and use deployed `Smoke` or `ChatDual` modes when the environment is available.
+- Update `app/README.md` in the same change as any runtime/config behavior change; see `documentation-sync.instructions.md`.
+
+## Keep this skill current
+
+If this task needed steps beyond what is listed above, add them to this file before finishing so future app/bootstrap changes benefit.
 

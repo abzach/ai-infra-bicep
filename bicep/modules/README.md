@@ -15,3 +15,5 @@
 | `vm.bicep` | Windows jumpbox, extensions, and auto-shutdown |
 
 Modules are orchestrated by `../templates/main.bicep`. Keep module interfaces explicit and preserve the security invariants in the root `AGENTS.md`.
+
+Update this table whenever a module is added, removed, or renamed; see [../../.github/instructions/documentation-sync.instructions.md](../../.github/instructions/documentation-sync.instructions.md). Use the Bicep MCP server (see [../../.github/instructions/bicep-mcp-server.instructions.md](../../.github/instructions/bicep-mcp-server.instructions.md)) for resource type/schema lookups when adding or changing a module.

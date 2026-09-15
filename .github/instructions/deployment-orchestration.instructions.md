@@ -11,4 +11,9 @@ applyTo: "scripts/deploy.ps1,scripts/config.ps1,scripts/common.ps1"
 - Keep CI behavior non-interactive. CI must pass `-VmAdminPassword` from a protected secret and must not print or write credentials.
 - If a change intentionally needs to bypass no-op behavior, use `-ForceRedeploy` for infrastructure or `-ForceAppBootstrap` for app package refresh.
 - Clean up generated parameter files, first-run scripts, and temporary packages on every exit path you add.
+- Update `scripts/README.md`, the deployment workflow diagram in the root `README.md`, and `AGENTS.md` in the same change; see `documentation-sync.instructions.md`.
+
+## Keep this skill current
+
+If this task needed steps beyond what is listed above, add them to this file before finishing so future orchestration changes benefit.
 

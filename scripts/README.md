@@ -11,3 +11,5 @@
 | `security-scan.ps1` | Validate generated template security invariants |
 
 Use PowerShell 7+. Normal reruns exit early when all expected resources exist and the recorded `desiredStateHash` matches the local desired state; use `-ForceRedeploy` to bypass this guard. Local successful deployments place a plaintext credential handoff under ignored `.local/credentials/`; move the password to a password manager, delete the file, and rotate the VM password. CI never prints or writes that credential.
+
+Update this README whenever a script's behavior, parameters, or exit conditions change; see [../.github/instructions/documentation-sync.instructions.md](../.github/instructions/documentation-sync.instructions.md).
