@@ -238,6 +238,22 @@ if ($Mode -eq 'Validate' -or $Mode -eq 'Smoke') {
         $httpsOnly = if ($null -ne $storage.enableHttpsTrafficOnly) { $storage.enableHttpsTrafficOnly } else { $storage.properties.supportsHttpsTrafficOnly }
         if ($httpsOnly -eq $true) { Write-Exists 'Pass: HTTPS-only enabled on storage' }
         else { Write-Needed 'Fail: HTTPS-only not enabled on storage'; $passed = $false }
+        if ($storage.sku.name -eq $config.skuName) { Write-Exists "Pass: storage redundancy is '$($config.skuName)'" }
+        else { Write-Needed "Fail: storage redundancy is '$($storage.sku.name)', expected '$($config.skuName)'"; $passed = $false }
+        if ($storage.accessTier -eq $config.storageAccessTier) { Write-Exists "Pass: storage access tier is '$($config.storageAccessTier)'" }
+        else { Write-Needed "Fail: storage access tier is '$($storage.accessTier)', expected '$($config.storageAccessTier)'"; $passed = $false }
+
+        $blobProperties = az storage account blob-service-properties show --account-name $storageAccountName --resource-group $CoreResourceGroupName --output json 2>$null | ConvertFrom-Json
+        if (-not $blobProperties) {
+            Write-Needed 'Fail: storage blob service properties could not be read'; $passed = $false
+        } else {
+            $actualBlobRetention = if ($blobProperties.deleteRetentionPolicy.enabled) { [int]$blobProperties.deleteRetentionPolicy.days } else { 0 }
+            $actualContainerRetention = if ($blobProperties.containerDeleteRetentionPolicy.enabled) { [int]$blobProperties.containerDeleteRetentionPolicy.days } else { 0 }
+            if ($actualBlobRetention -eq [int]$config.storageBlobSoftDeleteRetentionDays) { Write-Exists "Pass: blob soft-delete retention is $actualBlobRetention days" }
+            else { Write-Needed "Fail: blob soft-delete retention is $actualBlobRetention, expected $($config.storageBlobSoftDeleteRetentionDays)"; $passed = $false }
+            if ($actualContainerRetention -eq [int]$config.storageContainerSoftDeleteRetentionDays) { Write-Exists "Pass: container soft-delete retention is $actualContainerRetention days" }
+            else { Write-Needed "Fail: container soft-delete retention is $actualContainerRetention, expected $($config.storageContainerSoftDeleteRetentionDays)"; $passed = $false }
+        }
     }
 
     $vault = az keyvault show --name $keyVaultName --resource-group $CoreResourceGroupName --output json 2>$null | ConvertFrom-Json
@@ -245,6 +261,11 @@ if ($Mode -eq 'Validate' -or $Mode -eq 'Smoke') {
         Write-Needed "Fail: Key Vault '$keyVaultName' not found"
         $passed = $false
     } else {
+        if ([int]$vault.properties.softDeleteRetentionInDays -eq [int]$config.keyVaultSoftDeleteRetentionDays) {
+            Write-Exists "Pass: Key Vault soft-delete retention is $($config.keyVaultSoftDeleteRetentionDays) days"
+        } else {
+            Write-Needed "Fail: Key Vault soft-delete retention is '$($vault.properties.softDeleteRetentionInDays)', expected '$($config.keyVaultSoftDeleteRetentionDays)'"; $passed = $false
+        }
         $secretNames            = @('openai-endpoint','openai-deployment')
         $canReadSecretsDirectly = $true
 
@@ -274,6 +295,8 @@ if ($Mode -eq 'Validate' -or $Mode -eq 'Smoke') {
     } else {
         if ($openAi.kind -eq 'OpenAI') { Write-Exists 'Pass: OpenAI kind validated' }
         else { Write-Needed "Fail: OpenAI kind mismatch: $($openAi.kind)"; $passed = $false }
+        if ($openAi.properties.disableLocalAuth -eq $true) { Write-Exists 'Pass: OpenAI local authentication is disabled' }
+        else { Write-Needed 'Fail: OpenAI local authentication must remain disabled'; $passed = $false }
     }
 
     $hub = az resource show --name $hubName --resource-group $CoreResourceGroupName --resource-type Microsoft.MachineLearningServices/workspaces --output json 2>$null | ConvertFrom-Json
@@ -298,7 +321,26 @@ if ($Mode -eq 'Validate' -or $Mode -eq 'Smoke') {
 
     $vnet = az network vnet show --name $vnetName --resource-group $NetworkResourceGroupName --output json 2>$null | ConvertFrom-Json
     if (-not $vnet) { Write-Needed "Fail: virtual network '$vnetName' not found in '$NetworkResourceGroupName'"; $passed = $false }
-    else { Write-Exists "Pass: virtual network '$vnetName' exists" }
+    else {
+        if ($config.vnetAddressSpace -in $vnet.addressSpace.addressPrefixes) { Write-Exists "Pass: VNet address space includes '$($config.vnetAddressSpace)'" }
+        else { Write-Needed "Fail: VNet address spaces '$($vnet.addressSpace.addressPrefixes -join ', ')' do not include '$($config.vnetAddressSpace)'"; $passed = $false }
+        $servicesSubnet = $vnet.subnets | Where-Object name -eq 'services'
+        $vmSubnet = $vnet.subnets | Where-Object name -eq 'vm'
+        if ($servicesSubnet.addressPrefix -eq $config.servicesSubnetAddressPrefix) { Write-Exists "Pass: services subnet is '$($config.servicesSubnetAddressPrefix)'" }
+        else { Write-Needed "Fail: services subnet is '$($servicesSubnet.addressPrefix)', expected '$($config.servicesSubnetAddressPrefix)'"; $passed = $false }
+        if ($vmSubnet.addressPrefix -eq $config.vmSubnetAddressPrefix) { Write-Exists "Pass: VM subnet is '$($config.vmSubnetAddressPrefix)'" }
+        else { Write-Needed "Fail: VM subnet is '$($vmSubnet.addressPrefix)', expected '$($config.vmSubnetAddressPrefix)'"; $passed = $false }
+    }
+
+    $vmNicName = "$vmName-nic"
+    $vmNic = az network nic show --name $vmNicName --resource-group $NetworkResourceGroupName --output json 2>$null | ConvertFrom-Json
+    if (-not $vmNic) {
+        Write-Needed "Fail: VM NIC '$vmNicName' not found"; $passed = $false
+    } else {
+        $expectedAcceleratedNetworking = $config.vmAcceleratedNetworking -eq 'true'
+        if ($vmNic.enableAcceleratedNetworking -eq $expectedAcceleratedNetworking) { Write-Exists "Pass: accelerated networking is '$expectedAcceleratedNetworking'" }
+        else { Write-Needed "Fail: accelerated networking is '$($vmNic.enableAcceleratedNetworking)', expected '$expectedAcceleratedNetworking'"; $passed = $false }
+    }
 
     $privateEndpoints = az network private-endpoint list --resource-group $NetworkResourceGroupName --query "[].name" --output tsv 2>$null
     if (($privateEndpoints | Measure-Object).Count -lt 3) {
@@ -311,15 +353,22 @@ if ($Mode -eq 'Validate' -or $Mode -eq 'Smoke') {
     if (-not $vm) {
         Write-Needed "Fail: jumpbox VM '$vmName' not found"; $passed = $false
     } else {
-        if ($vm.storageProfile.imageReference.offer -eq 'Windows-11') {
-            Write-Exists 'Pass: jumpbox VM uses a Windows 11 image'
+        $expectedImage = "$($config.vmImagePublisher):$($config.vmImageOffer):$($config.vmImageSku):$($config.vmImageVersion)"
+        $actualImage = "$($vm.storageProfile.imageReference.publisher):$($vm.storageProfile.imageReference.offer):$($vm.storageProfile.imageReference.sku):$($vm.storageProfile.imageReference.version)"
+        if ($actualImage -ieq $expectedImage) {
+            Write-Exists "Pass: jumpbox VM uses configured image '$expectedImage'"
         } else {
-            Write-Needed "Fail: unexpected VM image offer: $($vm.storageProfile.imageReference.offer)"; $passed = $false
+            Write-Needed "Fail: VM image is '$actualImage', expected '$expectedImage'"; $passed = $false
         }
-        if ($vm.hardwareProfile.vmSize -eq 'Standard_B2ms') {
-            Write-Exists 'Pass: jumpbox VM size is Standard_B2ms (8 GiB)'
+        if ($vm.hardwareProfile.vmSize -eq $config.vmSize) {
+            Write-Exists "Pass: jumpbox VM size is '$($config.vmSize)'"
         } else {
-            Write-Needed "Fail: unexpected VM size: $($vm.hardwareProfile.vmSize)"; $passed = $false
+            Write-Needed "Fail: VM size is '$($vm.hardwareProfile.vmSize)', expected '$($config.vmSize)'"; $passed = $false
+        }
+        if ($vm.storageProfile.osDisk.managedDisk.storageAccountType -eq $config.vmOsDiskStorageAccountType) {
+            Write-Exists "Pass: VM OS disk tier is '$($config.vmOsDiskStorageAccountType)'"
+        } else {
+            Write-Needed "Fail: VM OS disk tier is '$($vm.storageProfile.osDisk.managedDisk.storageAccountType)', expected '$($config.vmOsDiskStorageAccountType)'"; $passed = $false
         }
     }
 
@@ -517,8 +566,11 @@ Write-Host 'LAUNCHER_VALIDATION_OK'
         if ($vault.properties.networkAcls.defaultAction -ne 'Deny') {
             Write-Needed "Fail: Key Vault networkAcls.defaultAction is '$($vault.properties.networkAcls.defaultAction)', expected Deny"; $passed = $false; $kvOk = $false
         }
+        if ($vault.properties.publicNetworkAccess -ne 'Disabled') {
+            Write-Needed "Fail: Key Vault publicNetworkAccess is '$($vault.properties.publicNetworkAccess)', expected Disabled"; $passed = $false; $kvOk = $false
+        }
         if ($kvOk) {
-            Write-Exists 'Pass: Key Vault has disk-encryption flag and default-deny ACL'
+            Write-Exists 'Pass: Key Vault is private-only with disk-encryption support and a default-deny ACL'
         }
     }
 
@@ -555,12 +607,15 @@ Write-Host 'LAUNCHER_VALIDATION_OK'
         if ($storageNetAcls.defaultAction -ne 'Deny') {
             Write-Needed "Fail: storage networkAcls.defaultAction is '$($storageNetAcls.defaultAction)', expected Deny"; $passed = $false; $storageSecOk = $false
         }
+        if ($storage.publicNetworkAccess -ne 'Disabled') {
+            Write-Needed "Fail: storage publicNetworkAccess is '$($storage.publicNetworkAccess)', expected Disabled"; $passed = $false; $storageSecOk = $false
+        }
         $tlsVersion = $storage.minimumTlsVersion
         if ($tlsVersion -notin @('TLS1_2', 'TLS1_3')) {
             Write-Needed "Fail: storage minimumTlsVersion is '$tlsVersion', expected TLS1_2 or TLS1_3"; $passed = $false; $storageSecOk = $false
         }
         if ($storageSecOk) {
-            Write-Exists "Pass: storage default-deny ACL enforced and minimum TLS is $tlsVersion"
+            Write-Exists "Pass: storage is private-only with a default-deny ACL and minimum TLS $tlsVersion"
         }
     }
 
@@ -612,7 +667,6 @@ Write-Host 'LAUNCHER_VALIDATION_OK'
             [pscustomobject]@{ Id = '5e0bd9bd-7b93-4f28-af87-19fc36ad61bd'; Name = 'Cognitive Services OpenAI User' }
         ) },
         [pscustomobject]@{ Identity = $vmManagedIdentity; Name = 'VM managed identity'; Roles = @(
-            [pscustomobject]@{ Id = '2a2b9908-6ea1-4ae2-8e65-a410df84e7d1'; Name = 'Storage Blob Data Reader' },
             [pscustomobject]@{ Id = '4633458b-17de-408a-b874-0445c86b69e6'; Name = 'Key Vault Secrets User' },
             [pscustomobject]@{ Id = '5e0bd9bd-7b93-4f28-af87-19fc36ad61bd'; Name = 'Cognitive Services OpenAI User' }
         ) }

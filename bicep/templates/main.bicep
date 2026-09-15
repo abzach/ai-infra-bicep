@@ -46,9 +46,10 @@ param modelVersion string
 param modelSkuName string
 
 @description('Tokens-per-minute capacity in thousands for the primary deployment.')
+@minValue(1)
 param capacityK int
 
-@description('Model deployment name for GPT-4o mini (secondary).')
+@description('Model deployment name for GPT-4.1 nano (secondary).')
 param secondaryModelDeploymentName string
 
 @description('Model family name for the secondary deployment.')
@@ -61,6 +62,7 @@ param secondaryModelVersion string
 param secondaryModelSkuName string
 
 @description('Tokens-per-minute capacity in thousands for the secondary deployment.')
+@minValue(1)
 param secondaryCapacityK int
 
 @description('Local administrator username for the Windows jumpbox VM.')
@@ -70,11 +72,28 @@ param vmAdminUsername string
 @description('Local administrator password for the Windows jumpbox VM.')
 param vmAdminPassword string
 
-@description('IPv4 CIDRs allowed to access Key Vault public endpoint (for example: 203.0.113.10/32).')
-param keyVaultIpAllowList array = []
+@description('Azure VM size for the Windows jumpbox.')
+param vmSize string
 
-@description('IPv4 CIDRs allowed to access Storage Account public endpoint (for example: 203.0.113.10/32).')
-param storageIpAllowList array = []
+@description('Publisher of the Azure Marketplace VM image.')
+param vmImagePublisher string
+
+@description('Offer of the Azure Marketplace VM image.')
+param vmImageOffer string
+
+@description('SKU of the Azure Marketplace VM image.')
+param vmImageSku string
+
+@description('Version of the Azure Marketplace VM image.')
+param vmImageVersion string
+
+@description('Storage account type for the managed VM OS disk.')
+@allowed([
+  'Standard_LRS'
+  'StandardSSD_LRS'
+  'Premium_LRS'
+])
+param vmOsDiskStorageAccountType string
 
 @description('IPv4 CIDRs allowed to RDP into the jumpbox VM (for example: 203.0.113.10/32). Leave empty to block all RDP.')
 param rdpAllowedIpCidrs array = []
@@ -108,16 +127,39 @@ param privateAiWorkspacesOnly bool = true
 @description('VNet address space CIDR.')
 param addressSpace string = '10.0.0.0/16'
 
+@description('Services subnet address prefix CIDR.')
+param servicesSubnetAddressPrefix string = '10.0.1.0/24'
+
+@description('VM subnet address prefix CIDR.')
+param vmSubnetAddressPrefix string = '10.0.2.0/24'
+
+@description('Enable accelerated networking on the VM NIC.')
+param vmAcceleratedNetworking bool = true
+
 @description('Storage account access tier.')
 @allowed([
   'Cool'
   'Hot'
-  'Premium'
 ])
 param storageAccessTier string = 'Hot'
 
+@description('Blob soft-delete retention in days. Set to 0 to disable.')
+@minValue(0)
+@maxValue(365)
+param storageBlobSoftDeleteRetentionDays int = 7
+
+@description('Container soft-delete retention in days. Set to 0 to disable.')
+@minValue(0)
+@maxValue(365)
+param storageContainerSoftDeleteRetentionDays int = 7
+
 @description('Name of the blob container created in the storage account for app artifact uploads.')
 param containerName string = 'chatapp'
+
+@description('Key Vault soft-delete retention in days.')
+@minValue(7)
+@maxValue(90)
+param keyVaultSoftDeleteRetentionDays int = 7
 
 @description('Disable local authentication (API key access) on the Azure OpenAI account. Defaults to true to enforce Entra ID-only authentication.')
 param disableLocalAuth bool = true
@@ -177,6 +219,9 @@ module networkModule '../modules/network.bicep' = {
     vnetName: vnetName
     location: location
     addressSpace: addressSpace
+    servicesSubnetAddressPrefix: servicesSubnetAddressPrefix
+    vmSubnetAddressPrefix: vmSubnetAddressPrefix
+    acceleratedNetworkingEnabled: vmAcceleratedNetworking
     tags: effectiveTags
     vmName: vmName
     rdpAllowedIpCidrs: rdpAllowedIpCidrs
@@ -211,10 +256,10 @@ module storageModule '../modules/storageaccount.bicep' = {
     location: location
     skuName: skuName
     adminObjectIds: adminObjectIds
-    subnetId: networkModule.outputs.servicesSubnetId
-    allowedIpCidrs: storageIpAllowList
     accessTier: storageAccessTier
     containerName: containerName
+    blobSoftDeleteRetentionDays: storageBlobSoftDeleteRetentionDays
+    containerSoftDeleteRetentionDays: storageContainerSoftDeleteRetentionDays
     tags: effectiveTags
   }
 }
@@ -228,8 +273,7 @@ module keyVaultModule '../modules/keyvault.bicep' = {
     adminObjectIds: adminObjectIds
     deployingObjectId: deployingObjectId
     deployingPrincipalType: deployingPrincipalType
-    subnetId: networkModule.outputs.servicesSubnetId
-    allowedIpCidrs: keyVaultIpAllowList
+    softDeleteRetentionInDays: keyVaultSoftDeleteRetentionDays
     tags: effectiveTags
   }
 }
@@ -379,6 +423,12 @@ module vmModule '../modules/vm.bicep' = {
     keyVaultResourceId: keyVaultModule.outputs.id
     adminUsername: vmAdminUsername
     adminPassword: vmAdminPassword
+    vmSize: vmSize
+    imagePublisher: vmImagePublisher
+    imageOffer: vmImageOffer
+    imageSku: vmImageSku
+    imageVersion: vmImageVersion
+    osDiskStorageAccountType: vmOsDiskStorageAccountType
     useSpotVm: vmUseSpot
     spotMaxPrice: vmSpotMaxPrice
     autoShutdownEnabled: vmAutoShutdownEnabled

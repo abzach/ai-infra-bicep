@@ -1,36 +1,46 @@
-# core.yaml — values that are identical across all environments.
+# Shared values inherited by every environment. Environment YAML values override matching keys.
 
 variables:
-  location: swedencentral
+  location: swedencentral # Azure region for all regional resources; use an Azure region name such as swedencentral.
 
-  containerName: chatapp
-  privateAiWorkspacesOnly: true
+  vnetAddressSpace: 10.0.0.0/16 # VNet IPv4 CIDR; must contain both subnet prefixes and must not overlap connected networks.
+  servicesSubnetAddressPrefix: 10.0.1.0/24 # Subnet CIDR for private endpoints and service access; must be inside vnetAddressSpace.
+  vmSubnetAddressPrefix: 10.0.2.0/24 # Subnet CIDR for the jumpbox VM; must be inside vnetAddressSpace and not overlap the services subnet.
+  vmAcceleratedNetworking: true # Enables accelerated networking on the VM NIC; allowed values: true, false. The selected VM SKU must support it.
 
-  modelDeploymentName: gpt-4-1-mini
-  modelName: gpt-4.1-mini
-  modelVersion: 2025-04-14
-  modelSkuName: GlobalStandard
+  storageAccessTier: Hot # Blob access tier; allowed values: Hot, Cool.
+  containerName: chatapp # Private blob container for app artifacts; 3-63 lowercase letters, numbers, or single hyphens.
+  storageBlobSoftDeleteRetentionDays: 7 # Deleted blob recovery window; allowed values: 0 (disabled) or 1-365 days.
+  storageContainerSoftDeleteRetentionDays: 7 # Deleted container recovery window; allowed values: 0 (disabled) or 1-365 days.
 
-  secondaryModelDeploymentName: gpt-4o-mini
-  secondaryModelName: gpt-4o-mini
-  secondaryModelVersion: 2024-07-18
-  secondaryModelSkuName: GlobalStandard
+  keyVaultSoftDeleteRetentionDays: 7 # Deleted vault/item recovery window; allowed values: 7-90 days and cannot be changed after creation.
+  privateAiWorkspacesOnly: true # Creates private endpoints and disables public AI workspace access; allowed values: true, false.
 
-  openaiApiVersion: 2025-01-01-preview
-  mlApiVersion: 2025-06-01
+  modelDeploymentName: gpt-4-1-mini # Primary deployment alias used by the app; letters, numbers, hyphens, periods, and underscores.
+  modelName: gpt-4.1-mini # Exact primary model catalog name available in location.
+  modelVersion: 2025-04-14 # Exact primary model version available in location; use YYYY-MM-DD when the model uses dated versions.
 
-  probePrompt: 'Reply with OK only.'
+  secondaryModelDeploymentName: gpt-4-1-nano # Secondary deployment alias used by the app; must differ from modelDeploymentName.
+  secondaryModelName: gpt-4.1-nano # Exact secondary model catalog name available in location.
+  secondaryModelVersion: 2025-04-14 # Exact secondary model version available in location.
 
-  vmAdminUsername: azureadmin  # Admin username for VMs 
-  vmSpotMaxPrice: -1
-  vmAutoShutdownEnabled: true
-  vmAutoShutdownTime: '0300'
-  vmAutoShutdownTimeZone: 'India Standard Time'
+  openaiApiVersion: 2025-01-01-preview # Data-plane API version used by the chat app and probes.
+  mlApiVersion: 2025-06-01 # ARM API version used by deployment cleanup for Foundry/ML workspaces.
+  probePrompt: 'Reply with OK only.' # Prompt used by deployment smoke tests; any non-empty text is allowed.
 
-  enableAuditDiagnostics: true
-  logAnalyticsRetentionDays: 30
-  logAnalyticsDailyQuotaGb: 0.5
+  vmAdminUsername: azureadmin # Local Windows administrator name; 1-20 characters and cannot be a reserved Windows account name.
+  vmImagePublisher: microsoftwindowsdesktop # Marketplace image publisher from the image URN.
+  vmImageOffer: windows-ent-cpc # Marketplace image offer from the image URN.
+  vmImageVersion: latest # Marketplace image version; allowed values: latest or a published version identifier.
+  vmSpotMaxPrice: -1 # Maximum Spot price in USD/hour; -1 allows up to pay-as-you-go price, or use a nonnegative whole number.
+  vmAutoShutdownEnabled: true # Enables the daily VM auto-shutdown schedule; allowed values: true, false.
+  vmAutoShutdownTime: '0300' # Auto-shutdown time in 24-hour HHmm format, from '0000' through '2359'.
+  vmAutoShutdownTimeZone: 'India Standard Time' # Windows time-zone ID used by the auto-shutdown schedule.
 
-  tagProject: aistack
-  tagWorkload: enterprise-ai-foundry
-  tagManagedBy: bicep
+  enableAuditDiagnostics: true # Configures supported resource diagnostic logs in Log Analytics; allowed values: true, false.
+  logAnalyticsRetentionDays: 30 # Log retention; allowed values: 30-730 days for the PerGB2018 workspace SKU.
+  logAnalyticsDailyQuotaGb: 0.5 # Daily ingestion cap in GB; use -1 for no cap or a positive decimal supported by Azure.
+
+  tagProject: aistack # Value for the project resource tag; any non-empty Azure tag value.
+  tagWorkload: enterprise-ai-foundry # Value for the workload resource tag; any non-empty Azure tag value.
+  tagManagedBy: bicep # Value for the managedBy resource tag; identifies the deployment owner/tool.

@@ -97,6 +97,7 @@ foreach ($storageAccount in $storageAccounts) {
     Test-Rule -Condition ($storageAccount.properties.minimumTlsVersion -in @('TLS1_2', 'TLS1_3')) -Message 'Storage requires TLS 1.2 or later.' -Failures $failures
     Test-Rule -Condition ($storageAccount.properties.allowBlobPublicAccess -eq $false) -Message 'Storage blocks anonymous blob access.' -Failures $failures
     Test-Rule -Condition ($storageAccount.properties.allowSharedKeyAccess -eq $false) -Message 'Storage blocks shared-key authorization.' -Failures $failures
+    Test-Rule -Condition ($storageAccount.properties.publicNetworkAccess -eq 'Disabled') -Message 'Storage public network access is disabled.' -Failures $failures
     Test-Rule -Condition ($storageAccount.properties.networkAcls.defaultAction -eq 'Deny') -Message 'Storage network ACL defaults to deny.' -Failures $failures
 }
 
@@ -104,6 +105,7 @@ $vaults = Get-ResourcesOfType -Resources $resources -Type 'Microsoft.KeyVault/va
 Test-Rule -Condition ($vaults.Count -gt 0) -Message 'A Key Vault is defined.' -Failures $failures
 foreach ($vault in $vaults) {
     Test-Rule -Condition ($vault.properties.enableRbacAuthorization -eq $true) -Message 'Key Vault uses Azure RBAC authorization.' -Failures $failures
+    Test-Rule -Condition ($vault.properties.publicNetworkAccess -eq 'Disabled') -Message 'Key Vault public network access is disabled.' -Failures $failures
     Test-Rule -Condition ($vault.properties.networkAcls.defaultAction -eq 'Deny') -Message 'Key Vault network ACL defaults to deny.' -Failures $failures
 }
 

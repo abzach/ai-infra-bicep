@@ -19,6 +19,29 @@ param adminUsername string = 'azureadmin'
 @description('Local administrator password for the Windows VM.')
 param adminPassword string
 
+@description('Azure VM size.')
+param vmSize string = 'Standard_L2as_v4'
+
+@description('Publisher of the Azure Marketplace VM image.')
+param imagePublisher string = 'microsoftwindowsdesktop'
+
+@description('Offer of the Azure Marketplace VM image.')
+param imageOffer string = 'windows-ent-cpc'
+
+@description('SKU of the Azure Marketplace VM image.')
+param imageSku string = 'win11-24h2-ent-cpc-m365'
+
+@description('Version of the Azure Marketplace VM image.')
+param imageVersion string = 'latest'
+
+@description('Storage account type for the managed OS disk.')
+@allowed([
+  'Standard_LRS'
+  'StandardSSD_LRS'
+  'Premium_LRS'
+])
+param osDiskStorageAccountType string = 'Standard_LRS'
+
 @description('Key Vault URI used by Azure Disk Encryption.')
 param keyVaultUrl string
 
@@ -44,7 +67,6 @@ param autoShutdownTimeZone string = 'India Standard Time'
 param tags object = {}
 
 var osDiskName = '${vmName}-osdisk'
-var vmSize = useSpotVm ? 'Standard_D2s_v3' : 'Standard_B2ms'
 var computerName = length(vmName) > 15 ? substring(vmName, 0, 15) : vmName
 var azureMonitorAgentSettings = {
   authentication: {
@@ -103,17 +125,17 @@ resource vmSpot 'Microsoft.Compute/virtualMachines@2024-03-01' = if (useSpotVm) 
     }
     storageProfile: {
       imageReference: {
-        publisher: 'MicrosoftWindowsDesktop'
-        offer: 'Windows-11'
-        sku: 'win11-24h2-ent'
-        version: 'latest'
+        publisher: imagePublisher
+        offer: imageOffer
+        sku: imageSku
+        version: imageVersion
       }
       osDisk: {
         name: osDiskName
         caching: 'ReadWrite'
         createOption: 'FromImage'
         managedDisk: {
-          storageAccountType: 'Standard_LRS'
+          storageAccountType: osDiskStorageAccountType
         }
       }
     }
@@ -127,6 +149,14 @@ resource vmSpot 'Microsoft.Compute/virtualMachines@2024-03-01' = if (useSpotVm) 
         }
       ]
     }
+    securityProfile: {
+      securityType: 'TrustedLaunch'
+      uefiSettings: {
+        secureBootEnabled: true
+        vTpmEnabled: true
+      }
+    }
+    licenseType: 'Windows_Client'
   }
 }
 
@@ -157,17 +187,17 @@ resource vmRegular 'Microsoft.Compute/virtualMachines@2024-03-01' = if (!useSpot
     }
     storageProfile: {
       imageReference: {
-        publisher: 'MicrosoftWindowsDesktop'
-        offer: 'Windows-11'
-        sku: 'win11-24h2-ent'
-        version: 'latest'
+        publisher: imagePublisher
+        offer: imageOffer
+        sku: imageSku
+        version: imageVersion
       }
       osDisk: {
         name: osDiskName
         caching: 'ReadWrite'
         createOption: 'FromImage'
         managedDisk: {
-          storageAccountType: 'Standard_LRS'
+          storageAccountType: osDiskStorageAccountType
         }
       }
     }
@@ -181,6 +211,14 @@ resource vmRegular 'Microsoft.Compute/virtualMachines@2024-03-01' = if (!useSpot
         }
       ]
     }
+    securityProfile: {
+      securityType: 'TrustedLaunch'
+      uefiSettings: {
+        secureBootEnabled: true
+        vTpmEnabled: true
+      }
+    }
+    licenseType: 'Windows_Client'
   }
 }
 

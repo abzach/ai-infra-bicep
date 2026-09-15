@@ -1,6 +1,6 @@
 MIT License
 
-Copyright (c) 2026 Abbia Zacharia (abzach@microsoft.com)
+Copyright (c) 2026 Abbia Zacharia
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -19,3 +19,14 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+Project notice:
+
+This project was independently authored by Abbia Zacharia and is shared for
+anyone who wants to learn from, adapt, or deploy Azure AI Foundry and other
+commonly used Azure services. The MIT License above intentionally permits
+personal, educational, research, and commercial use.
+
+Microsoft, Azure, Azure AI Foundry, and related product names are trademarks
+of Microsoft Corporation. This repository is not an official Microsoft
+product unless explicitly stated otherwise.

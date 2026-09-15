@@ -43,7 +43,9 @@ jobs:
 
       - name: Deploying resources
         shell: pwsh
-        run: ./scripts/deploy.ps1 -EnvironmentSuffix dev
+        env:
+          VM_ADMIN_PASSWORD: ${{ secrets.VM_ADMIN_PASSWORD }}
+        run: ./scripts/deploy.ps1 -EnvironmentSuffix dev -VmAdminPassword $env:VM_ADMIN_PASSWORD
 
   validate:
     name: Validate

@@ -38,17 +38,6 @@ resource hubStorageBlobDataContributorRole 'Microsoft.Authorization/roleAssignme
   }
 }
 
-// The VM only reads bootstrap artifacts, whereas the Hub needs artifact read/write access.
-resource vmStorageBlobDataReaderRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  name: guid(resourceGroup().id, storageAccount.id, vmIdentityPrincipalId, '2a2b9908-6ea1-4ae2-8e65-a410df84e7d1')
-  scope: storageAccount
-  properties: {
-    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '2a2b9908-6ea1-4ae2-8e65-a410df84e7d1')
-    principalId: vmIdentityPrincipalId
-    principalType: 'ServicePrincipal'
-  }
-}
-
 resource hubKvSecretsUserRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
   name: guid(resourceGroup().id, keyVault.id, hubIdentityPrincipalId, '4633458b-17de-408a-b874-0445c86b69e6')
   scope: keyVault

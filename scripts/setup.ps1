@@ -1,4 +1,4 @@
-# setup.ps1 — VM bootstrap script executed by Azure Custom Script Extension (CSE).
+# setup.ps1 — VM bootstrap script executed through Azure VM Run Command.
 
 $ErrorActionPreference = 'Stop'
 

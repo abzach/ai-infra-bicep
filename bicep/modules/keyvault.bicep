@@ -10,12 +10,6 @@ param location string
 @minLength(1)
 param adminObjectIds array
 
-@description('VNet subnet resource ID allowed by Key Vault firewall.')
-param subnetId string = ''
-
-@description('IPv4 CIDR ranges allowed by Key Vault firewall (for example: 203.0.113.10/32).')
-param allowedIpCidrs array = []
-
 @description('Resource tags to apply.')
 param tags object = {}
 
@@ -24,6 +18,11 @@ param deployingObjectId string = ''
 
 @description('Principal type for deployingObjectId (User, ServicePrincipal, or Group).')
 param deployingPrincipalType string = 'ServicePrincipal'
+
+@description('Soft-delete retention in days. Azure allows 7-90 days and does not permit changing it after vault creation.')
+@minValue(7)
+@maxValue(90)
+param softDeleteRetentionInDays int = 7
 
 resource keyVault 'Microsoft.KeyVault/vaults@2023-07-01' = {
   name: keyVaultName
@@ -40,20 +39,13 @@ resource keyVault 'Microsoft.KeyVault/vaults@2023-07-01' = {
     enabledForTemplateDeployment: true
     enableRbacAuthorization: true
     enableSoftDelete: true
-    softDeleteRetentionInDays: 7
-    publicNetworkAccess: 'Enabled'
+    softDeleteRetentionInDays: softDeleteRetentionInDays
+    publicNetworkAccess: 'Disabled'
     networkAcls: {
       bypass: 'AzureServices'
       defaultAction: 'Deny'
-      ipRules: [for cidr in allowedIpCidrs: {
-        value: cidr
-      }]
-      virtualNetworkRules: subnetId == '' ? [] : [
-        {
-          id: subnetId
-          ignoreMissingVnetServiceEndpoint: false
-        }
-      ]
+      ipRules: []
+      virtualNetworkRules: []
     }
     accessPolicies: []
   }

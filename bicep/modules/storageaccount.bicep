@@ -21,18 +21,11 @@ param adminObjectIds array = []
 @allowed([
   'Cool'
   'Hot'
-  'Premium'
 ])
 param accessTier string = 'Hot'
 
 @description('Name of the blob container to create for app artifact uploads.')
 param containerName string = 'chatapp'
-
-@description('VNet subnet resource ID allowed by Storage Account firewall.')
-param subnetId string = ''
-
-@description('IPv4 CIDR ranges allowed by Storage Account firewall (for example: 203.0.113.10/32).')
-param allowedIpCidrs array = []
 
 @description('Resource tags to apply.')
 param tags object = {}
@@ -51,41 +44,41 @@ resource storageAccount 'Microsoft.Storage/storageAccounts@2023-01-01' = {
     supportsHttpsTrafficOnly: true
     allowBlobPublicAccess: false
     allowSharedKeyAccess: false
-    publicNetworkAccess: 'Enabled'
+    publicNetworkAccess: 'Disabled'
     networkAcls: {
       bypass: 'AzureServices'
       defaultAction: 'Deny'
-      ipRules: [for cidr in allowedIpCidrs: {
-        value: cidr
-        action: 'Allow'
-      }]
-      virtualNetworkRules: subnetId == '' ? [] : [
-        {
-          id: subnetId
-          action: 'Allow'
-        }
-      ]
+      ipRules: []
+      virtualNetworkRules: []
     }
   }
 }
 
 @description('Blob soft delete retention in days. 0 disables soft delete.')
+@minValue(0)
+@maxValue(365)
 param blobSoftDeleteRetentionDays int = 7
 
 @description('Container soft delete retention in days. 0 disables soft delete.')
+@minValue(0)
+@maxValue(365)
 param containerSoftDeleteRetentionDays int = 7
 
 resource blobServices 'Microsoft.Storage/storageAccounts/blobServices@2023-01-01' = {
   parent: storageAccount
   name: 'default'
   properties: {
-    deleteRetentionPolicy: {
-      enabled: blobSoftDeleteRetentionDays > 0
-      days: blobSoftDeleteRetentionDays > 0 ? blobSoftDeleteRetentionDays : null
+    deleteRetentionPolicy: blobSoftDeleteRetentionDays > 0 ? {
+      enabled: true
+      days: max(blobSoftDeleteRetentionDays, 1)
+    } : {
+      enabled: false
     }
-    containerDeleteRetentionPolicy: {
-      enabled: containerSoftDeleteRetentionDays > 0
-      days: containerSoftDeleteRetentionDays > 0 ? containerSoftDeleteRetentionDays : null
+    containerDeleteRetentionPolicy: containerSoftDeleteRetentionDays > 0 ? {
+      enabled: true
+      days: max(containerSoftDeleteRetentionDays, 1)
+    } : {
+      enabled: false
     }
   }
 }

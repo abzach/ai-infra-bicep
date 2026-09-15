@@ -7,14 +7,14 @@
 #   # Preview changes without deploying
 #   .\deploy.ps1 -EnvironmentSuffix dev -WhatIf
 #
-#   # Add your current public IP to KV and storage firewalls for direct access
-#   .\deploy.ps1 -EnvironmentSuffix dev -Action myip
-#
 #   # Deploy with a specific VM password (also stores it in Key Vault)
 #   .\deploy.ps1 -EnvironmentSuffix dev -VmAdminPassword 'MyP@ss123!'
 #
+#   # Force a deployment even when the existing environment is already current
+#   .\deploy.ps1 -EnvironmentSuffix dev -ForceRedeploy
+#
 # PREREQUISITES
-#   - Azure CLI installed and `az login` completed (Owner or User Access Administrator on sub)
+#   - Azure CLI installed and `az login` completed (Owner, or Contributor plus User Access Administrator on sub)
 #   - PowerShell 7+ recommended
 #   - config.ps1 and common.ps1 must be present in the same directory
 
@@ -23,12 +23,14 @@ param(
     [ValidateSet('deploy','myip')] [string] $Action = 'deploy',
     [string] $VmAdminPassword,
     [switch] $ForceAppBootstrap,
+    [switch] $ForceRedeploy,
     [switch] $WhatIf
 )
 
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+$isCi = $env:CI -eq 'true' -or $env:GITHUB_ACTIONS -eq 'true' -or $env:TF_BUILD -eq 'True'
 
 function Get-CurrentScriptRoot {
     $commandDefinition = if ($MyInvocation.MyCommand) { $MyInvocation.MyCommand.Definition } else { $null }
@@ -408,146 +410,158 @@ function Invoke-AzCliWithRetry {
     }
 }
 
-function Wait-KeyVaultDnsResolution {
+function Get-KeyVaultSecretFingerprint {
     param(
-        [Parameter(Mandatory)] [string] $VaultName,
-        [int] $MaxAttempts = 8,
-        [int] $DelaySeconds = 10
+        [Parameter(Mandatory)] [string] $SecretValue
     )
 
-    $vaultHost = "$VaultName.vault.azure.net"
-
-    for ($attempt = 1; $attempt -le $MaxAttempts; $attempt++) {
-        try {
-            $addresses = [System.Net.Dns]::GetHostAddresses($vaultHost)
-            if ($addresses.Count -gt 0) {
-                return $true
-            }
-        } catch {
-        }
-
-        if ($attempt -lt $MaxAttempts) {
-            Write-Info "  Waiting for DNS resolution of '$vaultHost' (attempt $attempt/$MaxAttempts)..."
-            Start-Sleep -Seconds $DelaySeconds
-        }
-    }
-
-    return $false
+    $hash = [System.Security.Cryptography.SHA256]::HashData(
+        [System.Text.Encoding]::UTF8.GetBytes($SecretValue)
+    )
+    return "application/vnd.ai-infra.secret;sha256=$(([System.Convert]::ToHexString($hash)).ToLowerInvariant())"
 }
 
-function Test-KeyVaultAccessRetryableFailure {
+function Test-KeyVaultSecretValueCurrent {
     param(
-        [AllowNull()] [string] $OutputText
+        [Parameter(Mandatory)] [string] $VaultResourceId,
+        [Parameter(Mandatory)] [string] $SecretName,
+        [Parameter(Mandatory)] [string] $SecretValue
     )
 
-    if ([string]::IsNullOrWhiteSpace($OutputText)) {
-        return $false
-    }
+    $escapedSecretName = [System.Uri]::EscapeDataString($SecretName)
+    $secretUri = "https://management.azure.com${VaultResourceId}/secrets/${escapedSecretName}?api-version=2023-07-01"
+    $existingFingerprint = az rest `
+        --method get `
+        --url $secretUri `
+        --query properties.contentType `
+        --output tsv 2>$null
 
-    return $OutputText -match 'ForbiddenByConnection|ForbiddenByFirewall|ForbiddenByRbac|Public network access is disabled|Client address|network access is denied|does not have secrets (get|set|list) permission|Status: 403|status code 403|invalid status ''Forbidden''' 
+    return $LASTEXITCODE -eq 0 -and
+        -not [string]::IsNullOrWhiteSpace($existingFingerprint) -and
+        $existingFingerprint.Trim() -eq (Get-KeyVaultSecretFingerprint -SecretValue $SecretValue)
 }
 
 function Sync-KeyVaultSecretValue {
     param(
-        [Parameter(Mandatory)] [string] $VaultName,
+        [Parameter(Mandatory)] [string] $VaultResourceId,
         [Parameter(Mandatory)] [string] $SecretName,
         [Parameter(Mandatory)] [string] $SecretValue,
-        [int] $MaxAttempts = 12,
-        [int] $DelaySeconds = 15
+        [int] $MaxAttempts = 3,
+        [int] $DelaySeconds = 8
     )
 
     if ([string]::IsNullOrWhiteSpace($SecretValue)) {
         return $true
     }
 
-    for ($attempt = 1; $attempt -le $MaxAttempts; $attempt++) {
-        $existingSecretValueResult = Invoke-AzCliWithRetry `
-            -Operation "read secret '$SecretName' from Key Vault '$VaultName'" `
-            -MaxAttempts 1 `
-            -DelaySeconds $DelaySeconds `
-            -Command {
-                az keyvault secret show `
-                    --vault-name $VaultName `
-                    --name $SecretName `
-                    --query value `
-                    --output tsv
-            }
-
-        $existingValue = if ($existingSecretValueResult.Success -and -not [string]::IsNullOrWhiteSpace($existingSecretValueResult.Output)) {
-            $existingSecretValueResult.Output.Trim()
-        } else {
-            ''
-        }
-
-        $secretNeedsUpdate = (-not $existingSecretValueResult.Success) -or ($existingValue -ne $SecretValue.Trim())
-
-        if ($secretNeedsUpdate) {
-            $updatedSecretResult = Invoke-AzCliWithRetry `
-                -Operation "write secret '$SecretName' to Key Vault '$VaultName'" `
-                -MaxAttempts 1 `
-                -DelaySeconds $DelaySeconds `
-                -Command {
-                    az keyvault secret set `
-                        --vault-name $VaultName `
-                        --name $SecretName `
-                        "--value=$SecretValue" `
-                        --query id `
-                        --output tsv
-                }
-
-            if ($updatedSecretResult.Success -and -not [string]::IsNullOrWhiteSpace($updatedSecretResult.Output)) {
-                $updatedSecretId = $updatedSecretResult.Output.Trim()
-                $updatedVersion = ($updatedSecretId -split '/')[-1]
-                Write-Exists "  Updated secret '$SecretName' (version: $updatedVersion)."
-                return $true
-            }
-
-            $canRetry = Test-KeyVaultAccessRetryableFailure -OutputText $updatedSecretResult.Output
-            if ($canRetry -and $attempt -lt $MaxAttempts) {
-                Write-Info "  Waiting for Key Vault data-plane access to sync '$SecretName' (attempt $attempt/$MaxAttempts)..."
-                Start-Sleep -Seconds $DelaySeconds
-                continue
-            }
-
-            Write-Info "  Warning: failed to update secret '$SecretName'."
-            if (-not [string]::IsNullOrWhiteSpace($updatedSecretResult.Output)) {
-                Write-Info "  Key Vault error details: $($updatedSecretResult.Output)"
-            }
-
-            return $false
-        }
-
-        $existingSecretIdResult = Invoke-AzCliWithRetry `
-            -Operation "read secret metadata '$SecretName' from Key Vault '$VaultName'" `
-            -MaxAttempts 1 `
-            -DelaySeconds $DelaySeconds `
-            -Command {
-                az keyvault secret show `
-                    --vault-name $VaultName `
-                    --name $SecretName `
-                    --query id `
-                    --output tsv
-            }
-
-        if ($existingSecretIdResult.Success -and -not [string]::IsNullOrWhiteSpace($existingSecretIdResult.Output)) {
-            $existingSecretId = $existingSecretIdResult.Output.Trim()
-            $existingVersion = ($existingSecretId -split '/')[-1]
-            Write-Exists "  Secret '$SecretName' already current (version: $existingVersion)."
-            return $true
-        }
-
-        $canRetry = Test-KeyVaultAccessRetryableFailure -OutputText $existingSecretIdResult.Output
-        if ($canRetry -and $attempt -lt $MaxAttempts) {
-            Write-Info "  Waiting for Key Vault data-plane access to confirm '$SecretName' (attempt $attempt/$MaxAttempts)..."
-            Start-Sleep -Seconds $DelaySeconds
-            continue
-        }
-
+    if (Test-KeyVaultSecretValueCurrent -VaultResourceId $VaultResourceId -SecretName $SecretName -SecretValue $SecretValue) {
         Write-Exists "  Secret '$SecretName' already current."
         return $true
     }
 
-    return $false
+    $escapedSecretName = [System.Uri]::EscapeDataString($SecretName)
+    $secretUri = "https://management.azure.com${VaultResourceId}/secrets/${escapedSecretName}?api-version=2023-07-01"
+    $bodyFile = Join-Path ([System.IO.Path]::GetTempPath()) "kv-secret-$PID-$([guid]::NewGuid().ToString('N')).json"
+
+    try {
+        @{
+            properties = @{
+                value = $SecretValue
+                contentType = (Get-KeyVaultSecretFingerprint -SecretValue $SecretValue)
+            }
+        } | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $bodyFile -Encoding utf8NoBOM
+
+        $updatedSecretResult = Invoke-AzCliWithRetry `
+            -Operation "write secret '$SecretName' through Azure Resource Manager" `
+            -MaxAttempts $MaxAttempts `
+            -DelaySeconds $DelaySeconds `
+            -Command {
+                az rest `
+                    --method put `
+                    --url $secretUri `
+                    --headers 'Content-Type=application/json' `
+                    --body "@$bodyFile" `
+                    --query id `
+                    --output tsv
+            }
+
+        if ($updatedSecretResult.Success) {
+            Write-Exists "  Updated secret '$SecretName' through Azure Resource Manager."
+            return $true
+        }
+
+        Write-Info "  Warning: failed to update secret '$SecretName' through Azure Resource Manager."
+        if (-not [string]::IsNullOrWhiteSpace($updatedSecretResult.Output)) {
+            Write-Info "  Azure Resource Manager error details: $($updatedSecretResult.Output)"
+        }
+        return $false
+    } finally {
+        Remove-Item -LiteralPath $bodyFile -Force -ErrorAction SilentlyContinue
+    }
+}
+
+function Invoke-VmBootstrapPackage {
+    param(
+        [Parameter(Mandatory)] [string] $ResourceGroupName,
+        [Parameter(Mandatory)] [string] $VmName,
+        [Parameter(Mandatory)] [string[]] $FilePaths
+    )
+
+    $packageRoot = Join-Path ([System.IO.Path]::GetTempPath()) "ai-infra-bootstrap-$PID-$([guid]::NewGuid().ToString('N'))"
+    $archivePath = "$packageRoot.zip"
+    $bootstrapScriptPath = "$packageRoot.ps1"
+
+    try {
+        New-Item -ItemType Directory -Path $packageRoot -Force | Out-Null
+        foreach ($filePath in $FilePaths) {
+            if (-not (Test-Path -LiteralPath $filePath)) {
+                throw "Bootstrap file not found: $filePath"
+            }
+            $sourceName = Split-Path $filePath -Leaf
+            $destinationName = if ($sourceName -like 'first-run-*.ps1') { 'first-run.ps1' } else { $sourceName }
+            Copy-Item -LiteralPath $filePath -Destination (Join-Path $packageRoot $destinationName) -Force
+        }
+
+        Compress-Archive -Path (Join-Path $packageRoot '*') -DestinationPath $archivePath -CompressionLevel Optimal -Force
+        $archiveBase64 = [System.Convert]::ToBase64String([System.IO.File]::ReadAllBytes($archivePath))
+        $bootstrapScript = @"
+`$ErrorActionPreference = 'Stop'
+`$archivePath = 'C:\Windows\Temp\ai-infra-bootstrap.zip'
+`$extractPath = 'C:\Windows\Temp\ai-infra-bootstrap'
+[System.IO.File]::WriteAllBytes(`$archivePath, [System.Convert]::FromBase64String('$archiveBase64'))
+Remove-Item -LiteralPath `$extractPath -Recurse -Force -ErrorAction SilentlyContinue
+Expand-Archive -LiteralPath `$archivePath -DestinationPath `$extractPath -Force
+& (Join-Path `$extractPath 'setup.ps1')
+Write-Output 'AI_INFRA_BOOTSTRAP_SUCCEEDED'
+"@
+        Set-Content -LiteralPath $bootstrapScriptPath -Value $bootstrapScript -Encoding utf8NoBOM
+
+        $bootstrapResult = Invoke-AzCliWithRetry `
+            -Operation "bootstrap VM '$VmName' through Azure Run Command" `
+            -MaxAttempts 3 `
+            -DelaySeconds 30 `
+            -Command {
+                az vm run-command invoke `
+                    --resource-group $ResourceGroupName `
+                    --name $VmName `
+                    --command-id RunPowerShellScript `
+                    --scripts "@$bootstrapScriptPath" `
+                    --query 'value[].message' `
+                    --output tsv
+            }
+
+        if (-not $bootstrapResult.Success -or $bootstrapResult.Output -notmatch 'AI_INFRA_BOOTSTRAP_SUCCEEDED') {
+            if (-not [string]::IsNullOrWhiteSpace($bootstrapResult.Output)) {
+                Write-Info "  VM bootstrap details: $($bootstrapResult.Output)"
+            }
+            return $false
+        }
+
+        return $true
+    } finally {
+        Remove-Item -LiteralPath $packageRoot -Recurse -Force -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath $archivePath, $bootstrapScriptPath -Force -ErrorAction SilentlyContinue
+    }
 }
 
 function Update-VmUserPassword {
@@ -674,6 +688,224 @@ function Get-DeploymentOutputValue {
     return [string]$val
 }
 
+function Get-DeploymentDesiredStateHash {
+    param(
+        [Parameter(Mandatory)] [string] $ScriptRoot,
+        [Parameter(Mandatory)] [ValidateSet('dev','uat')] [string] $EnvironmentSuffix
+    )
+
+    $repoRoot = (Resolve-Path -Path (Join-Path $ScriptRoot '..') -ErrorAction Stop).Path
+    $relativePaths = [System.Collections.Generic.List[string]]::new()
+    $relativePaths.Add('bicep\templates\main.bicep')
+    $relativePaths.Add('variables\core.yaml')
+    $relativePaths.Add("variables\$EnvironmentSuffix.yaml")
+    $relativePaths.Add('scripts\deploy.ps1')
+    $relativePaths.Add('scripts\setup.ps1')
+    $relativePaths.Add('app\chat.py')
+    $relativePaths.Add('app\test.py')
+    $relativePaths.Add('app\requirements.txt')
+
+    $modulesPath = Join-Path $repoRoot 'bicep\modules'
+    Get-ChildItem -Path $modulesPath -Filter '*.bicep' -File | Sort-Object Name | ForEach-Object {
+        $relativePaths.Add([System.IO.Path]::GetRelativePath($repoRoot, $_.FullName))
+    }
+
+    $sha256 = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        foreach ($relativePath in ($relativePaths | Sort-Object -Unique)) {
+            $fullPath = Join-Path $repoRoot $relativePath
+            if (-not (Test-Path -LiteralPath $fullPath -PathType Leaf)) {
+                throw "Desired-state input file not found: $fullPath"
+            }
+
+            $normalizedRelativePath = ([System.IO.Path]::GetRelativePath($repoRoot, (Resolve-Path -Path $fullPath).Path)).Replace('\', '/')
+            $pathBytes = [System.Text.Encoding]::UTF8.GetBytes("$normalizedRelativePath`n")
+            $null = $sha256.TransformBlock($pathBytes, 0, $pathBytes.Length, $null, 0)
+
+            $fileBytes = [System.IO.File]::ReadAllBytes($fullPath)
+            $null = $sha256.TransformBlock($fileBytes, 0, $fileBytes.Length, $null, 0)
+
+            $separatorBytes = [System.Text.Encoding]::UTF8.GetBytes("`n")
+            $null = $sha256.TransformBlock($separatorBytes, 0, $separatorBytes.Length, $null, 0)
+        }
+
+        $null = $sha256.TransformFinalBlock([byte[]]::new(0), 0, 0)
+        return ([System.BitConverter]::ToString($sha256.Hash) -replace '-', '').ToLowerInvariant()
+    } finally {
+        $sha256.Dispose()
+    }
+}
+
+function Test-AzureResourceCurrent {
+    param(
+        [Parameter(Mandatory)] [string] $ResourceId,
+        [Parameter(Mandatory)] [string] $Description
+    )
+
+    $resourceJson = az resource show --ids $ResourceId --output json 2>$null
+    if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($resourceJson)) {
+        Write-Info "  Not current: $Description is missing."
+        return $false
+    }
+
+    try {
+        $resource = $resourceJson | ConvertFrom-Json
+    } catch {
+        Write-Info "  Not current: could not parse status for $Description."
+        return $false
+    }
+
+    $state = if ($resource.properties -and $resource.properties.PSObject.Properties['provisioningState']) {
+        [string]$resource.properties.provisioningState
+    } else {
+        ''
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($state) -and $state -ne 'Succeeded') {
+        Write-Info "  Not current: $Description provisioning state is '$state'."
+        return $false
+    }
+
+    return $true
+}
+
+function Test-OpenAiDeploymentCurrent {
+    param(
+        [Parameter(Mandatory)] [string] $ResourceGroupName,
+        [Parameter(Mandatory)] [string] $AccountName,
+        [Parameter(Mandatory)] [string] $DeploymentName
+    )
+
+    $state = az cognitiveservices account deployment show `
+        --resource-group $ResourceGroupName `
+        --name $AccountName `
+        --deployment-name $DeploymentName `
+        --query properties.provisioningState `
+        --output tsv 2>$null
+
+    if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($state)) {
+        Write-Info "  Not current: OpenAI model deployment '$DeploymentName' is missing."
+        return $false
+    }
+
+    if ($state.Trim() -ne 'Succeeded') {
+        Write-Info "  Not current: OpenAI model deployment '$DeploymentName' provisioning state is '$($state.Trim())'."
+        return $false
+    }
+
+    return $true
+}
+
+function Test-EnterpriseDeploymentCurrent {
+    param(
+        [Parameter(Mandatory)] [string] $SubscriptionId,
+        [Parameter(Mandatory)] [string] $CoreResourceGroupName,
+        [Parameter(Mandatory)] [string] $NetworkResourceGroupName,
+        [Parameter(Mandatory)] [string] $StorageAccountName,
+        [Parameter(Mandatory)] [string] $KeyVaultName,
+        [Parameter(Mandatory)] [string] $OpenAiAccountName,
+        [Parameter(Mandatory)] [string] $HubName,
+        [Parameter(Mandatory)] [string] $ProjectName,
+        [Parameter(Mandatory)] [string] $HubManagedIdentityName,
+        [Parameter(Mandatory)] [string] $VmManagedIdentityName,
+        [Parameter(Mandatory)] [string] $VnetName,
+        [Parameter(Mandatory)] [string] $VmName,
+        [Parameter(Mandatory)] [string] $LogAnalyticsWorkspaceName,
+        [Parameter(Mandatory)] [string] $PrimaryModelDeploymentName,
+        [Parameter(Mandatory)] [string] $SecondaryModelDeploymentName,
+        [Parameter(Mandatory)] [bool] $PrivateAiWorkspacesOnly,
+        [Parameter(Mandatory)] [bool] $VmAutoShutdownEnabled,
+        [Parameter(Mandatory)] [string] $ExpectedDesiredStateHash
+    )
+
+    Write-Task 'Checking whether the existing deployment is already current...'
+
+    $coreRgJson = az group show --name $CoreResourceGroupName --output json 2>$null
+    if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($coreRgJson)) {
+        Write-Info "  Not current: core resource group '$CoreResourceGroupName' is missing."
+        return $false
+    }
+
+    $networkRgJson = az group show --name $NetworkResourceGroupName --output json 2>$null
+    if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($networkRgJson)) {
+        Write-Info "  Not current: network resource group '$NetworkResourceGroupName' is missing."
+        return $false
+    }
+
+    $coreRg = $coreRgJson | ConvertFrom-Json
+    $existingDesiredStateHash = if ($coreRg.tags -and $coreRg.tags.PSObject.Properties['desiredStateHash']) {
+        [string]$coreRg.tags.desiredStateHash
+    } else {
+        ''
+    }
+
+    if ($existingDesiredStateHash -ne $ExpectedDesiredStateHash) {
+        if ([string]::IsNullOrWhiteSpace($existingDesiredStateHash)) {
+            Write-Info '  Not current: deployed desired-state hash is not recorded yet.'
+        } else {
+            Write-Info '  Not current: deployed desired-state hash differs from local source/configuration.'
+        }
+        return $false
+    }
+
+    $subScope = "/subscriptions/$SubscriptionId"
+    $coreScope = "$subScope/resourceGroups/$CoreResourceGroupName"
+    $networkScope = "$subScope/resourceGroups/$NetworkResourceGroupName"
+    $resourceChecks = @(
+        @{ Id = "$coreScope/providers/Microsoft.Storage/storageAccounts/$StorageAccountName"; Description = "Storage account '$StorageAccountName'" }
+        @{ Id = "$coreScope/providers/Microsoft.KeyVault/vaults/$KeyVaultName"; Description = "Key Vault '$KeyVaultName'" }
+        @{ Id = "$coreScope/providers/Microsoft.CognitiveServices/accounts/$OpenAiAccountName"; Description = "Azure OpenAI account '$OpenAiAccountName'" }
+        @{ Id = "$coreScope/providers/Microsoft.MachineLearningServices/workspaces/$HubName"; Description = "AI Hub '$HubName'" }
+        @{ Id = "$coreScope/providers/Microsoft.MachineLearningServices/workspaces/$ProjectName"; Description = "AI Project '$ProjectName'" }
+        @{ Id = "$coreScope/providers/Microsoft.ManagedIdentity/userAssignedIdentities/$HubManagedIdentityName"; Description = "Hub managed identity '$HubManagedIdentityName'" }
+        @{ Id = "$coreScope/providers/Microsoft.ManagedIdentity/userAssignedIdentities/$VmManagedIdentityName"; Description = "VM managed identity '$VmManagedIdentityName'" }
+        @{ Id = "$coreScope/providers/Microsoft.OperationalInsights/workspaces/$LogAnalyticsWorkspaceName"; Description = "Log Analytics workspace '$LogAnalyticsWorkspaceName'" }
+        @{ Id = "$coreScope/providers/Microsoft.Compute/virtualMachines/$VmName"; Description = "Jumpbox VM '$VmName'" }
+        @{ Id = "$networkScope/providers/Microsoft.Network/virtualNetworks/$VnetName"; Description = "Virtual network '$VnetName'" }
+        @{ Id = "$networkScope/providers/Microsoft.Network/networkSecurityGroups/$VmName-nsg"; Description = "VM NSG '$VmName-nsg'" }
+        @{ Id = "$networkScope/providers/Microsoft.Network/networkInterfaces/$VmName-nic"; Description = "VM NIC '$VmName-nic'" }
+        @{ Id = "$networkScope/providers/Microsoft.Network/publicIPAddresses/$VmName-pip"; Description = "VM public IP '$VmName-pip'" }
+        @{ Id = "$networkScope/providers/Microsoft.Network/privateEndpoints/$StorageAccountName-blob-pe"; Description = "Storage private endpoint '$StorageAccountName-blob-pe'" }
+        @{ Id = "$networkScope/providers/Microsoft.Network/privateEndpoints/$KeyVaultName-pe"; Description = "Key Vault private endpoint '$KeyVaultName-pe'" }
+        @{ Id = "$networkScope/providers/Microsoft.Network/privateEndpoints/$OpenAiAccountName-account-pe"; Description = "OpenAI private endpoint '$OpenAiAccountName-account-pe'" }
+        @{ Id = "$networkScope/providers/Microsoft.Network/privateDnsZones/privatelink.vaultcore.azure.net"; Description = "Key Vault private DNS zone" }
+        @{ Id = "$networkScope/providers/Microsoft.Network/privateDnsZones/privatelink.openai.azure.com"; Description = "OpenAI private DNS zone" }
+        @{ Id = "$networkScope/providers/Microsoft.Network/privateDnsZones/privatelink.blob.core.windows.net"; Description = "Storage private DNS zone" }
+        @{ Id = "$networkScope/providers/Microsoft.Network/privateDnsZones/privatelink.api.azureml.ms"; Description = "Azure ML private DNS zone" }
+        @{ Id = "$networkScope/providers/Microsoft.Network/privateDnsZones/privatelink.vaultcore.azure.net/virtualNetworkLinks/vnet-link"; Description = "Key Vault private DNS VNet link" }
+        @{ Id = "$networkScope/providers/Microsoft.Network/privateDnsZones/privatelink.openai.azure.com/virtualNetworkLinks/vnet-link"; Description = "OpenAI private DNS VNet link" }
+        @{ Id = "$networkScope/providers/Microsoft.Network/privateDnsZones/privatelink.blob.core.windows.net/virtualNetworkLinks/vnet-link"; Description = "Storage private DNS VNet link" }
+        @{ Id = "$networkScope/providers/Microsoft.Network/privateDnsZones/privatelink.api.azureml.ms/virtualNetworkLinks/vnet-link"; Description = "Azure ML private DNS VNet link" }
+        @{ Id = "$coreScope/providers/Microsoft.Compute/virtualMachines/$VmName/extensions/AzureMonitorWindowsAgent"; Description = "Azure Monitor Agent VM extension" }
+        @{ Id = "$coreScope/providers/Microsoft.Compute/virtualMachines/$VmName/extensions/IaaSAntimalware"; Description = "IaaS Antimalware VM extension" }
+        @{ Id = "$coreScope/providers/Microsoft.Compute/virtualMachines/$VmName/extensions/AzureDiskEncryption"; Description = "Azure Disk Encryption VM extension" }
+    )
+
+    if ($PrivateAiWorkspacesOnly) {
+        $resourceChecks += @{ Id = "$networkScope/providers/Microsoft.Network/privateEndpoints/$HubName-pe"; Description = "AI Hub private endpoint '$HubName-pe'" }
+    }
+
+    if ($VmAutoShutdownEnabled) {
+        $resourceChecks += @{ Id = "$coreScope/providers/Microsoft.DevTestLab/schedules/shutdown-computevm-$VmName"; Description = "VM auto-shutdown schedule 'shutdown-computevm-$VmName'" }
+    }
+
+    foreach ($resourceCheck in $resourceChecks) {
+        if (-not (Test-AzureResourceCurrent -ResourceId $resourceCheck.Id -Description $resourceCheck.Description)) {
+            return $false
+        }
+    }
+
+    if (-not (Test-OpenAiDeploymentCurrent -ResourceGroupName $CoreResourceGroupName -AccountName $OpenAiAccountName -DeploymentName $PrimaryModelDeploymentName)) {
+        return $false
+    }
+    if (-not (Test-OpenAiDeploymentCurrent -ResourceGroupName $CoreResourceGroupName -AccountName $OpenAiAccountName -DeploymentName $SecondaryModelDeploymentName)) {
+        return $false
+    }
+
+    Write-Exists '  Existing environment is complete and matches the current desired-state hash.'
+    return $true
+}
+
 
 Write-Task 'Validating Azure CLI authentication context...'
 az account show --output none 2>$null
@@ -694,17 +926,24 @@ if ($LASTEXITCODE -ne 0) {
     exit 1
 }
 
-Register-RequiredResourceProviders -SubscriptionId $subscriptionId
-
 Write-Task "Loading environment configuration for '$EnvironmentSuffix'..."
 $config = Read-EnterpriseEnvironmentConfig -ScriptRoot $scriptRoot -EnvironmentSuffix $EnvironmentSuffix -NameSuffix $NameSuffix
 
 # Assign all config variables immediately after loading config
 $BaseName                        = $config.baseName
 $Location                        = $config.location
+$VnetAddressSpace                = $config.vnetAddressSpace
+$ServicesSubnetAddressPrefix     = $config.servicesSubnetAddressPrefix
+$VmSubnetAddressPrefix           = $config.vmSubnetAddressPrefix
+$VmAcceleratedNetworking         = Convert-ToBoolean -Value $config.vmAcceleratedNetworking -Default $true
 $CoreResourceGroupName           = $config.coreResourceGroupName
 $NetworkResourceGroupName        = $config.networkResourceGroupName
+$VnetName                        = $config.vnetName
 $SkuName                         = $config.skuName
+$StorageAccessTier               = $config.storageAccessTier
+$StorageBlobSoftDeleteDays       = [int]$config.storageBlobSoftDeleteRetentionDays
+$StorageContainerSoftDeleteDays  = [int]$config.storageContainerSoftDeleteRetentionDays
+$KeyVaultSoftDeleteDays          = [int]$config.keyVaultSoftDeleteRetentionDays
 $ModelDeploymentName             = $config.modelDeploymentName
 $ModelName                       = $config.modelName
 $ModelVersion                    = $config.modelVersion
@@ -717,6 +956,12 @@ $SecondaryModelSkuName           = $config.secondaryModelSkuName
 $SecondaryCapacityK              = [int]$config.secondaryCapacityK
 $AdminObjectIds                  = ($config.adminObjectIds -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' })
 $VmAdminUsername                 = $config.vmAdminUsername
+$VmSize                          = $config.vmSize
+$VmImagePublisher                = $config.vmImagePublisher
+$VmImageOffer                    = $config.vmImageOffer
+$VmImageSku                      = $config.vmImageSku
+$VmImageVersion                  = $config.vmImageVersion
+$VmOsDiskStorageAccountType      = $config.vmOsDiskStorageAccountType
 $MlApiVersion                    = $config.mlApiVersion
 $VmUseSpot                       = Convert-ToBoolean -Value $config.vmUseSpot -Default $true
 $VmSpotMaxPrice                  = [int]$config.vmSpotMaxPrice
@@ -727,6 +972,8 @@ $PrivateAiWorkspacesOnly         = Convert-ToBoolean -Value $config.privateAiWor
 $EnableAuditDiagnostics          = Convert-ToBoolean -Value $config.enableAuditDiagnostics -Default $true
 $LogAnalyticsRetentionDays       = [int]$config.logAnalyticsRetentionDays
 $LogAnalyticsDailyQuotaGb        = $config.logAnalyticsDailyQuotaGb
+$LogAnalyticsWorkspaceName       = $config.lawWorkspaceName
+$desiredStateHash                = Get-DeploymentDesiredStateHash -ScriptRoot $scriptRoot -EnvironmentSuffix $EnvironmentSuffix
 $deploymentName = ("enterprise-$BaseName-$EnvironmentSuffix-$Location-$(Get-Date -Format 'yyyyMMddHHmmss')").ToLower()
 $templatePath = Join-Path $scriptRoot '..\bicep\templates\main.bicep'
 if (-not (Test-Path $templatePath)) {
@@ -753,42 +1000,42 @@ Write-Info "  TenantId (for first-run device login): $tenantId"
 $adminUpn = $AdminObjectIds[0]
 
 if ($Action -eq 'myip') {
-    Write-Task 'Detecting public IP address...'
-    $localPublicIp = Get-PublicIpAddress
-    if ([string]::IsNullOrWhiteSpace($localPublicIp)) {
-        Write-Error 'Could not determine the public IP of this machine.'
-        exit 1
-    }
-    $localPublicIpCidr = "$localPublicIp/32"
-    Write-Info "  Public IP detected: $localPublicIp"
-
-    Write-Task "  Adding firewall rule $localPublicIpCidr to Key Vault '$keyVaultName'..."
-    az keyvault network-rule add `
-        --name $keyVaultName `
-        --resource-group $CoreResourceGroupName `
-        --ip-address $localPublicIpCidr `
-        --output none 2>$null
-    if ($LASTEXITCODE -eq 0) {
-        Write-Exists "  Firewall rule added to Key Vault '$keyVaultName'."
-    } else {
-        Write-Needed "  Warning: could not add firewall rule to Key Vault '$keyVaultName' (vault may not exist yet)."
-    }
-
-    Write-Task "  Adding firewall rule $localPublicIp to Storage Account '$storageAccountName'..."
-    az storage account network-rule add `
-        --resource-group $CoreResourceGroupName `
-        --account-name $storageAccountName `
-        --ip-address $localPublicIp `
-        --output none 2>$null
-    if ($LASTEXITCODE -eq 0) {
-        Write-Exists "  Firewall rule added to Storage Account '$storageAccountName'."
-    } else {
-        Write-Needed "  Warning: could not add firewall rule to Storage Account '$storageAccountName' (account may not exist yet)."
-    }
-
-    Write-Exists 'Done.'
-    exit 0
+    Write-Error "The 'myip' action is unavailable because subscription policy requires Key Vault and Storage public network access to remain disabled. Use the VM inside the VNet for data-plane access."
+    exit 1
 }
+
+if (-not $WhatIf -and -not $ForceRedeploy -and -not $ForceAppBootstrap) {
+    $deploymentIsCurrent = Test-EnterpriseDeploymentCurrent `
+        -SubscriptionId $subscriptionId `
+        -CoreResourceGroupName $CoreResourceGroupName `
+        -NetworkResourceGroupName $NetworkResourceGroupName `
+        -StorageAccountName $storageAccountName `
+        -KeyVaultName $keyVaultName `
+        -OpenAiAccountName $openAiAccountName `
+        -HubName $hubName `
+        -ProjectName $projectName `
+        -HubManagedIdentityName $hubManagedIdentityName `
+        -VmManagedIdentityName $vmManagedIdentityName `
+        -VnetName $VnetName `
+        -VmName $vmName `
+        -LogAnalyticsWorkspaceName $LogAnalyticsWorkspaceName `
+        -PrimaryModelDeploymentName $ModelDeploymentName `
+        -SecondaryModelDeploymentName $SecondaryModelDeploymentName `
+        -PrivateAiWorkspacesOnly $PrivateAiWorkspacesOnly `
+        -VmAutoShutdownEnabled $VmAutoShutdownEnabled `
+        -ExpectedDesiredStateHash $desiredStateHash
+
+    if ($deploymentIsCurrent) {
+        Write-Exists "Deployment for environment '$EnvironmentSuffix' is already current. Exiting without redeploying or changing resources."
+        exit 0
+    }
+} elseif ($ForceRedeploy) {
+    Write-Info 'ForceRedeploy supplied — skipping current-deployment early exit.'
+} elseif ($ForceAppBootstrap) {
+    Write-Info 'ForceAppBootstrap supplied — skipping current-deployment early exit.'
+}
+
+Register-RequiredResourceProviders -SubscriptionId $subscriptionId
 
 Write-Task 'Verifying deploying identity has role-assignment write permission...'
 $accountTypeRaw = az account show --query 'user.type' --output tsv 2>$null
@@ -830,15 +1077,14 @@ This role is required because the Bicep template creates Azure RBAC role assignm
 for the managed identity (Storage Blob Data Contributor, Key Vault Secrets User,
 Cognitive Services OpenAI User).
 
-One-time fix — run the following as a subscription Owner or Global Admin:
-  az role assignment create \
-    --role "User Access Administrator" \
-    --assignee "$deployingObjectId" \
-    --scope "$subScope"
+One-time fix — have an administrator with role-assignment write permission at this
+subscription scope run this single-line command (compatible with PowerShell):
+  az role assignment create --role "User Access Administrator" --assignee "$deployingObjectId" --scope "$subScope"
 
-For the Azure DevOps service connection (object ID shown above), you can also assign
-the 'Owner' role via the Azure portal:
-  Subscription -> Access control (IAM) -> Add role assignment -> Owner -> select the SP.
+The deploying identity also needs resource deployment permissions, such as Contributor.
+The Entra Global Administrator role alone does not grant Azure subscription access.
+In the portal, select the actual deploying user or service principal:
+  Subscription -> Access control (IAM) -> Add role assignment -> User Access Administrator.
 "@
     exit 1
 }
@@ -863,73 +1109,33 @@ $deploymentTags = @{
     project = if ([string]::IsNullOrWhiteSpace($config.tagProject)) { $BaseName } else { $config.tagProject }
     workload = if ([string]::IsNullOrWhiteSpace($config.tagWorkload)) { 'enterprise-ai-foundry' } else { $config.tagWorkload }
     managedBy = if ([string]::IsNullOrWhiteSpace($config.tagManagedBy)) { 'bicep' } else { $config.tagManagedBy }
+    desiredStateHash = $desiredStateHash
 }
 
-Write-Task 'Detecting public IP address for Key Vault firewall whitelist...'
+Write-Task 'Detecting public IP address for the VM RDP allow rule...'
 $localPublicIp = Get-PublicIpAddress
 if ([string]::IsNullOrWhiteSpace($localPublicIp)) {
-    Write-Error 'Could not determine the public IP of this machine. Cannot proceed with Key Vault operations.'
+    Write-Error 'Could not determine the public IP of this machine. Cannot configure restricted RDP access.'
     exit 1
 }
 $localPublicIpCidr = "$localPublicIp/32"
-$keyVaultIpAllowList = @($localPublicIpCidr)
-$storageIpAllowList = @($localPublicIp)
+$rdpAllowedIpCidrs = @($localPublicIpCidr)
 Write-Info "  Public IP detected: $localPublicIp"
-Write-Info "  Trying to add network firewall rule '$localPublicIpCidr' to Key Vault '$keyVaultName'..."
-az keyvault network-rule add `
-    --name $keyVaultName `
-    --resource-group $CoreResourceGroupName `
-    --ip-address $localPublicIpCidr `
-    --output none 2>$null
-
-if ($LASTEXITCODE -eq 0) {
-    Write-Exists "  Firewall rule '$localPublicIpCidr' added to Key Vault '$keyVaultName'."
-    Write-Info '  Waiting for Key Vault firewall rule to propagate...'
-    Start-Sleep -Seconds 15
-} else {
-    Write-Needed "  Could not add the rule because Key Vault '$keyVaultName' does not exist."
-    Write-Info "  Key Vault '$keyVaultName' will be deployed using Bicep templates shortly, we will try adding the rules again after."
-}
-
-Write-Info "  Trying to add network firewall rule '$localPublicIpCidr' to Storage Account '$storageAccountName'..."
-az storage account network-rule add `
-    --resource-group $CoreResourceGroupName `
-    --account-name $storageAccountName `
-    --ip-address $localPublicIp `
-    --output none 2>$null
-
-if ($LASTEXITCODE -eq 0) {
-    Write-Exists "  Firewall rule '$localPublicIp' added to Storage Account '$storageAccountName'."
-    Write-Info '  Waiting for Storage Account firewall rule to propagate...'
-    Start-Sleep -Seconds 15
-} else {
-    Write-Needed "  Could not add the rule because Storage Account '$storageAccountName' does not exist."
-    Write-Info "  Storage Account '$storageAccountName' will be deployed using Bicep templates shortly, we will try adding the rules again after."
-}
 
 if ([string]::IsNullOrWhiteSpace($VmAdminPassword)) {
-    $existingVmAdminPassword = az keyvault secret show `
-        --vault-name $keyVaultName `
-        --name 'vm-admin-password' `
-        --query value `
-        --output tsv 2>$null
+    if ($isCi) {
+        Write-Error 'VM_ADMIN_PASSWORD was not supplied. CI deployments must pass -VmAdminPassword from a protected secret.'
+        exit 1
+    }
 
-    if ($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace($existingVmAdminPassword)) {
-        $VmAdminPassword = $existingVmAdminPassword.Trim()
-        $isNewVmPassword = $false
-        Write-Exists 'Reusing existing VM admin password from Key Vault.'
+    $existingVmId = az vm show --resource-group $CoreResourceGroupName --name $vmName --query id --output tsv 2>$null
+    $existingVmFound = $LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace($existingVmId)
+    $VmAdminPassword = New-SecurePassword
+    if ($existingVmFound) {
+        Write-Info "  VM '$vmName' exists. Generated a new password that will be applied and stored through the private-vault-compatible deployment path."
     } else {
-        $existingVmId = az vm show --resource-group $CoreResourceGroupName --name $vmName --query id --output tsv 2>$null
-        if ($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace($existingVmId)) {
-            Write-Needed "  Warning: VM '$vmName' exists but Key Vault secret is not accessible. Generating a new VM password for this deployment."
-        }
-
-        $VmAdminPassword = New-SecurePassword
-        $isNewVmPassword = $true
         Write-Exists 'Generated a new VM admin password for first-time deployment.'
     }
-} else {
-    $isNewVmPassword = $true
 }
 
 if (-not [string]::IsNullOrWhiteSpace($VmAdminPassword)) {
@@ -944,7 +1150,15 @@ $deploymentParameters = @{
         environmentSuffix = @{ value = $EnvironmentSuffix }
         nameSuffix = @{ value = $NameSuffix }
         location = @{ value = $Location }
+        addressSpace = @{ value = $VnetAddressSpace }
+        servicesSubnetAddressPrefix = @{ value = $ServicesSubnetAddressPrefix }
+        vmSubnetAddressPrefix = @{ value = $VmSubnetAddressPrefix }
+        vmAcceleratedNetworking = @{ value = $VmAcceleratedNetworking }
         skuName = @{ value = $SkuName }
+        storageAccessTier = @{ value = $StorageAccessTier }
+        storageBlobSoftDeleteRetentionDays = @{ value = $StorageBlobSoftDeleteDays }
+        storageContainerSoftDeleteRetentionDays = @{ value = $StorageContainerSoftDeleteDays }
+        keyVaultSoftDeleteRetentionDays = @{ value = $KeyVaultSoftDeleteDays }
         adminObjectIds = @{ value = @($AdminObjectIds) }
         modelDeploymentName = @{ value = $ModelDeploymentName }
         modelName = @{ value = $ModelName }
@@ -958,6 +1172,12 @@ $deploymentParameters = @{
         secondaryCapacityK = @{ value = $SecondaryCapacityK }
         vmAdminUsername = @{ value = $VmAdminUsername }
         vmAdminPassword = @{ value = $VmAdminPassword }
+        vmSize = @{ value = $VmSize }
+        vmImagePublisher = @{ value = $VmImagePublisher }
+        vmImageOffer = @{ value = $VmImageOffer }
+        vmImageSku = @{ value = $VmImageSku }
+        vmImageVersion = @{ value = $VmImageVersion }
+        vmOsDiskStorageAccountType = @{ value = $VmOsDiskStorageAccountType }
         tags = @{ value = $deploymentTags }
         vmUseSpot = @{ value = $VmUseSpot }
         vmSpotMaxPrice = @{ value = $VmSpotMaxPrice }
@@ -966,9 +1186,7 @@ $deploymentParameters = @{
         vmAutoShutdownTimeZone = @{ value = $VmAutoShutdownTimeZone }
         privateAiWorkspacesOnly = @{ value = $PrivateAiWorkspacesOnly }
         logAnalyticsRetentionDays = @{ value = $LogAnalyticsRetentionDays }
-        keyVaultIpAllowList = @{ value = $keyVaultIpAllowList }
-        storageIpAllowList = @{ value = $storageIpAllowList }
-        rdpAllowedIpCidrs = @{ value = $keyVaultIpAllowList }
+        rdpAllowedIpCidrs = @{ value = $rdpAllowedIpCidrs }
         deployingObjectId = @{ value = $deployingObjectId }
         deployingPrincipalType = @{ value = ($accountType -eq 'servicePrincipal' ? 'ServicePrincipal' : 'User') }
         # Passes the original creation date so Bicep can preserve it on the createdDate tag
@@ -982,17 +1200,18 @@ $deploymentParameters | ConvertTo-Json -Depth 10 | Set-Content -Path $parameterF
 Write-Task "Deploying enterprise AI Foundry stack for environment '$EnvironmentSuffix'..."
 Write-Info "  Core RG    : $CoreResourceGroupName"
 Write-Info "  Network RG : $NetworkResourceGroupName"
-Write-Task 'Ensuring required resource groups exist...'
-az group create --name $CoreResourceGroupName --location $Location --output none
-az group create --name $NetworkResourceGroupName --location $Location --output none
+if (-not $WhatIf) {
+    Write-Task 'Ensuring required resource groups exist...'
+    az group create --name $CoreResourceGroupName --location $Location --output none
+    az group create --name $NetworkResourceGroupName --location $Location --output none
 
-Write-Task 'Checking for stale Azure ML workspaces from previous failed deployments...'
-$armHeaders = Get-AzureArmHeaders -SubscriptionId $subscriptionId
-if ($null -eq $armHeaders) {
-    Write-Error 'Unable to acquire an ARM access token for the active subscription/tenant context.'
-    exit 1
-}
-$purgedWorkspaceNames = [System.Collections.Generic.List[string]]::new()
+    Write-Task 'Checking for stale Azure ML workspaces from previous failed deployments...'
+    $armHeaders = Get-AzureArmHeaders -SubscriptionId $subscriptionId
+    if ($null -eq $armHeaders) {
+        Write-Error 'Unable to acquire an ARM access token for the active subscription/tenant context.'
+        exit 1
+    }
+    $purgedWorkspaceNames = [System.Collections.Generic.List[string]]::new()
 
 foreach ($workspaceName in @($hubName, $projectName)) {
     $getUri = "https://management.azure.com/subscriptions/$subscriptionId/resourceGroups/$CoreResourceGroupName/providers/Microsoft.MachineLearningServices/workspaces/${workspaceName}?api-version=$MlApiVersion"
@@ -1254,6 +1473,9 @@ foreach ($identityNameForRoleCleanup in $identityNamesForRoleCleanup) {
             }
         }
     }
+    }
+} else {
+    Write-Info 'Preview mode: skipping resource-group creation and destructive stale-resource cleanup.'
 }
 
 if ($WhatIf) {
@@ -1338,9 +1560,19 @@ $openAiSecondaryDeployment = (Get-DeploymentOutputValue -Outputs $deploymentOutp
 $managedIdentityClientId = (Get-DeploymentOutputValue -Outputs $deploymentOutputs -Name 'vmManagedIdentityClientId').Trim()
 $logAnalyticsWorkspaceId = (Get-DeploymentOutputValue -Outputs $deploymentOutputs -Name 'logAnalyticsWorkspaceId').Trim()
 $logAnalyticsWorkspaceName = (Get-DeploymentOutputValue -Outputs $deploymentOutputs -Name 'logAnalyticsWorkspaceName').Trim()
+$vmPublicIpAddress = (Get-DeploymentOutputValue -Outputs $deploymentOutputs -Name 'vmPublicIpAddress').Trim()
 if ([string]::IsNullOrWhiteSpace($managedIdentityClientId)) {
     $managedIdentityClientIdRaw = az identity show --resource-group $CoreResourceGroupName --name $vmManagedIdentityName --query clientId --output tsv 2>$null
     $managedIdentityClientId = if (-not [string]::IsNullOrWhiteSpace($managedIdentityClientIdRaw)) { $managedIdentityClientIdRaw.Trim() } else { '' }
+}
+
+if ([string]::IsNullOrWhiteSpace($vmPublicIpAddress)) {
+    $vmPublicIpAddressRaw = az network public-ip show `
+        --resource-group $NetworkResourceGroupName `
+        --name "$vmName-pip" `
+        --query ipAddress `
+        --output tsv 2>$null
+    $vmPublicIpAddress = if (-not [string]::IsNullOrWhiteSpace($vmPublicIpAddressRaw)) { $vmPublicIpAddressRaw.Trim() } else { '<query Azure portal>' }
 }
 
 if ([string]::IsNullOrWhiteSpace($openAiDeployment)) {
@@ -1381,38 +1613,35 @@ try {
     Write-Info "  Warning: post-deploy diagnostics configuration encountered an error (non-fatal): $_"
 }
 
-Write-Task 'Syncing Key Vault secrets...'
-if (-not (Wait-KeyVaultDnsResolution -VaultName $keyVaultName)) {
-    Write-Error "Unable to resolve Key Vault DNS name '$keyVaultName.vault.azure.net' after waiting. Check DNS/firewall/private endpoint connectivity and retry deployment."
-    exit 1
-}
+Write-Task 'Syncing Key Vault secrets through Azure Resource Manager...'
+$keyVaultResourceId = "/subscriptions/$subscriptionId/resourceGroups/$CoreResourceGroupName/providers/Microsoft.KeyVault/vaults/$keyVaultName"
 $secretSyncFailures = @()
-if (-not (Sync-KeyVaultSecretValue -VaultName $keyVaultName -SecretName 'openai-endpoint' -SecretValue $openAiEndpoint)) {
+if (-not (Sync-KeyVaultSecretValue -VaultResourceId $keyVaultResourceId -SecretName 'openai-endpoint' -SecretValue $openAiEndpoint)) {
     $secretSyncFailures += 'openai-endpoint'
 }
-if (-not (Sync-KeyVaultSecretValue -VaultName $keyVaultName -SecretName 'openai-deployment' -SecretValue $openAiDeployment)) {
+if (-not (Sync-KeyVaultSecretValue -VaultResourceId $keyVaultResourceId -SecretName 'openai-deployment' -SecretValue $openAiDeployment)) {
     $secretSyncFailures += 'openai-deployment'
 }
-if (-not (Sync-KeyVaultSecretValue -VaultName $keyVaultName -SecretName 'openai-secondary-deployment' -SecretValue $openAiSecondaryDeployment)) {
+if (-not (Sync-KeyVaultSecretValue -VaultResourceId $keyVaultResourceId -SecretName 'openai-secondary-deployment' -SecretValue $openAiSecondaryDeployment)) {
     $secretSyncFailures += 'openai-secondary-deployment'
 }
 if (-not [string]::IsNullOrWhiteSpace($VmAdminPassword)) {
-    if (-not (Sync-KeyVaultSecretValue -VaultName $keyVaultName -SecretName 'vm-admin-password' -SecretValue $VmAdminPassword)) {
+    if (-not (Sync-KeyVaultSecretValue -VaultResourceId $keyVaultResourceId -SecretName 'vm-admin-password' -SecretValue $VmAdminPassword)) {
         $secretSyncFailures += 'vm-admin-password'
     }
 } else {
     Write-Info "  Skipping vm-admin-password sync because the password is not available."
 }
-if (-not (Sync-KeyVaultSecretValue -VaultName $keyVaultName -SecretName 'keyvault-url' -SecretValue $keyVaultUrl)) {
+if (-not (Sync-KeyVaultSecretValue -VaultResourceId $keyVaultResourceId -SecretName 'keyvault-url' -SecretValue $keyVaultUrl)) {
     $secretSyncFailures += 'keyvault-url'
 }
 if (-not [string]::IsNullOrWhiteSpace($managedIdentityClientId)) {
-    if (-not (Sync-KeyVaultSecretValue -VaultName $keyVaultName -SecretName 'managed-identity-client-id' -SecretValue $managedIdentityClientId)) {
+    if (-not (Sync-KeyVaultSecretValue -VaultResourceId $keyVaultResourceId -SecretName 'managed-identity-client-id' -SecretValue $managedIdentityClientId)) {
         $secretSyncFailures += 'managed-identity-client-id'
     }
 }
 $openAiApiVersion = if (-not [string]::IsNullOrWhiteSpace($config.openaiApiVersion)) { $config.openaiApiVersion } else { '2025-01-01-preview' }
-if (-not (Sync-KeyVaultSecretValue -VaultName $keyVaultName -SecretName 'openai-api-version' -SecretValue $openAiApiVersion)) {
+if (-not (Sync-KeyVaultSecretValue -VaultResourceId $keyVaultResourceId -SecretName 'openai-api-version' -SecretValue $openAiApiVersion)) {
     $secretSyncFailures += 'openai-api-version'
 }
 
@@ -1429,7 +1658,7 @@ $configVersionHash  = ([System.BitConverter]::ToString(
         [System.Text.Encoding]::UTF8.GetBytes($configVersionInput)
     )
 ) -replace '-', '').ToLowerInvariant().Substring(0, 16)
-$null = Sync-KeyVaultSecretValue -VaultName $keyVaultName -SecretName 'config-version' -SecretValue $configVersionHash
+$null = Sync-KeyVaultSecretValue -VaultResourceId $keyVaultResourceId -SecretName 'config-version' -SecretValue $configVersionHash
 Write-Exists "  Config version hash stored: $configVersionHash"
 
 Write-Task 'Generating first-run.ps1 for VM...'
@@ -1607,259 +1836,60 @@ foreach ($hashFile in $hashInputFiles) {
 }
 $localContentHash = ([System.BitConverter]::ToString($sha256.ComputeHash($combinedBytes.ToArray())) -replace '-', '').ToLower()
 
-$storedContentHash = (az keyvault secret show `
-    --vault-name $keyVaultName `
-    --name 'chatapp-content-hash' `
-    --query value `
-    --output tsv 2>$null)
-if ($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace($storedContentHash)) {
-    $storedContentHash = $storedContentHash.Trim().ToLower()
-} else {
-    $storedContentHash = ''
-}
+$contentIsCurrent = Test-KeyVaultSecretValueCurrent `
+    -VaultResourceId $keyVaultResourceId `
+    -SecretName 'chatapp-content-hash' `
+    -SecretValue $localContentHash
 
-if ($localContentHash -eq $storedContentHash -and -not $ForceAppBootstrap) {
-    Write-Exists 'App files unchanged since last deploy — skipping upload and Custom Script Extension.'
+if ($contentIsCurrent -and -not $ForceAppBootstrap) {
+    Write-Exists 'App files unchanged since last deploy — skipping VM bootstrap.'
     Remove-Item $firstRunFile -Force -ErrorAction SilentlyContinue
 } else {
-    Write-Needed 'App files changed (or first deploy) — uploading and applying Custom Script Extension...'
-
-    if (-not [string]::IsNullOrWhiteSpace($localPublicIp)) {
-        Write-Info "  Ensuring deployer IP $localPublicIp is still allowed on Storage Account '$storageAccountName'..."
-
-        az storage account network-rule add `
-            --resource-group $CoreResourceGroupName `
-            --account-name $storageAccountName `
-            --ip-address $localPublicIp `
-            --output none 2>$null
-        if ($LASTEXITCODE -eq 0) {
-            Write-Exists "  Firewall rule '$localPublicIp' added to Storage Account '$storageAccountName'."
-        }
-        Write-Info "  Waiting for Storage firewall rule to propagate..."
-        Start-Sleep -Seconds 30
-    }
-
-    Write-Info "Syncing storage account key secret in Key Vault..."
-    $storageAccountKeyResult = Invoke-AzCliWithRetry `
-        -Operation "retrieve storage account key for '$storageAccountName'" `
-        -DelaySeconds 12 `
-        -Command {
-            az storage account keys list `
-                --resource-group $CoreResourceGroupName `
-                --account-name $storageAccountName `
-                --query '[0].value' `
-                --output tsv
-        }
-
-    $storageAccountKey = if ($storageAccountKeyResult.Success -and -not [string]::IsNullOrWhiteSpace($storageAccountKeyResult.Output)) {
-        $storageAccountKeyResult.Output.Trim()
-    } else {
-        ''
-    }
-
-    if ([string]::IsNullOrWhiteSpace($storageAccountKey)) {
-        Write-Error "Failed to retrieve storage account key (exit code: $($storageAccountKeyResult.ExitCode))."
-        if (-not [string]::IsNullOrWhiteSpace($storageAccountKeyResult.Output)) {
-            Write-Error "Azure CLI details: $($storageAccountKeyResult.Output)"
-        }
-        exit 1
-    }
-
-    $null = Sync-KeyVaultSecretValue -VaultName $keyVaultName -SecretName 'storage-account-key' -SecretValue $storageAccountKey
-
-    $storageAccountKey2Result = Invoke-AzCliWithRetry `
-        -Operation "retrieve storage account key2 for '$storageAccountName'" `
-        -DelaySeconds 12 `
-        -Command {
-            az storage account keys list `
-                --resource-group $CoreResourceGroupName `
-                --account-name $storageAccountName `
-                --query '[1].value' `
-                --output tsv
-        }
-
-    if ($storageAccountKey2Result.Success -and -not [string]::IsNullOrWhiteSpace($storageAccountKey2Result.Output)) {
-        $null = Sync-KeyVaultSecretValue -VaultName $keyVaultName -SecretName 'storage-account-key2' -SecretValue $storageAccountKey2Result.Output.Trim()
-    }
-
-    $containerExists = az storage container exists `
-        --account-name $storageAccountName `
-        --auth-mode login `
-        --name $containerName `
-        --query exists `
-        --output tsv 2>$null
-
-    if ($containerExists -ne 'true') {
-        Write-Info "  Creating container '$containerName'..."
-        az storage container create `
-            --account-name $storageAccountName `
-            --auth-mode login `
-            --name $containerName `
-            --output none 2>$null
-    }
-
-    foreach ($file in @('chat.py', 'test.py', 'requirements.txt')) {
-        $filePath = Join-Path $appDir $file
-        if (Test-Path $filePath) {
-            az storage blob upload `
-                --account-name $storageAccountName `
-                --auth-mode login `
-                --container-name $containerName `
-                --file $filePath `
-                --name $file `
-                --overwrite `
-                --output none
-            
-            if ($LASTEXITCODE -ne 0) {
-                Remove-Item $firstRunFile -Force -ErrorAction SilentlyContinue
-                Write-Error "Failed to upload $file to blob storage."
-                exit 1
-            }
-
-            Write-Exists "  Uploaded $file"
-        }
-    }
-
-    az storage blob upload `
-        --account-name $storageAccountName `
-        --auth-mode login `
-        --container-name $containerName `
-        --file $firstRunFile `
-        --name 'first-run.ps1' `
-        --overwrite `
-        --output none
-
-    if ($LASTEXITCODE -ne 0) {
-        Remove-Item $firstRunFile -Force -ErrorAction SilentlyContinue
-        Write-Error 'Failed to upload first-run.ps1 to blob storage.'
-        exit 1
-    }
-
-    Write-Exists '  Uploaded first-run.ps1'
-
-    az storage blob upload `
-        --account-name $storageAccountName `
-        --auth-mode login `
-        --container-name $containerName `
-        --file $setupScript `
-        --name 'setup.ps1' `
-        --overwrite `
-        --output none
-
-    if ($LASTEXITCODE -ne 0) {
-        Remove-Item $firstRunFile -Force -ErrorAction SilentlyContinue
-        Write-Error 'Failed to upload setup.ps1 to blob storage.'
-        exit 1
-    }
-
-    Write-Exists '  Uploaded setup.ps1'
-    Remove-Item $firstRunFile -Force -ErrorAction SilentlyContinue
-
-    Write-Exists "  Retaining firewall rule '$localPublicIpCidr' on Key Vault '$keyVaultName' for ongoing access."
-
-    Write-Task 'Applying Custom Script Extension to VM...'
-    Write-Info "[App packaging + upload] completed in $($phaseWatch.Elapsed.ToString('mm\:ss'))"
+    Write-Needed 'App files changed (or first deploy) — transferring through Azure VM Run Command...'
+    Write-Info "[App package generation] completed in $($phaseWatch.Elapsed.ToString('mm\:ss'))"
     $phaseWatch.Restart()
 
     $vmReady = Ensure-VmRunning -ResourceGroupName $CoreResourceGroupName -VmName $vmName
     if (-not $vmReady) {
-        Write-Error '  Unable to guarantee the VM is running; cannot apply Custom Script Extension.'
+        Remove-Item $firstRunFile -Force -ErrorAction SilentlyContinue
+        Write-Error '  Unable to guarantee the VM is running; cannot bootstrap the application.'
         exit 1
     }
 
-    $managedIdentityClientId = az identity show `
-        --resource-group $CoreResourceGroupName `
-        --name $vmManagedIdentityName `
-        --query clientId -o tsv
+    $bootstrapFiles = @(
+        (Join-Path $appDir 'chat.py'),
+        (Join-Path $appDir 'test.py'),
+        (Join-Path $appDir 'requirements.txt'),
+        $firstRunFile,
+        $setupScript
+    )
+    $bootstrapSucceeded = Invoke-VmBootstrapPackage `
+        -ResourceGroupName $CoreResourceGroupName `
+        -VmName $vmName `
+        -FilePaths $bootstrapFiles
+    Remove-Item $firstRunFile -Force -ErrorAction SilentlyContinue
 
-    $blobBase = "https://${storageAccountName}.blob.core.windows.net/${containerName}"
-
-    $settingsFile          = Join-Path $tempDir "cse-settings-$PID.json"
-    $protectedSettingsFile = Join-Path $tempDir "cse-protected-settings-$PID.json"
-
-    $settingsObject = @{
-        fileUris = @(
-            "${blobBase}/setup.ps1",
-            "${blobBase}/chat.py",
-            "${blobBase}/test.py",
-            "${blobBase}/requirements.txt",
-            "${blobBase}/first-run.ps1"
-        )
-        commandToExecute = "powershell -ExecutionPolicy Bypass -File setup.ps1"
-    }
-
-    $protectedSettingsObject = @{
-        managedIdentity = @{
-            clientId = $managedIdentityClientId
-        }
-    }
-
-    $settingsObject          | ConvertTo-Json -Compress | Out-File $settingsFile          -Encoding UTF8
-    $protectedSettingsObject | ConvertTo-Json -Compress | Out-File $protectedSettingsFile -Encoding UTF8
-
-    $extensionApplied = $false
-    for ($attempt = 1; $attempt -le 4; $attempt++) {
-        az vm extension set `
-            --resource-group $CoreResourceGroupName `
-            --vm-name $vmName `
-            --name CustomScriptExtension `
-            --publisher Microsoft.Compute `
-            --version 1.10 `
-            --force-update `
-            --settings "@$settingsFile" `
-            --protected-settings "@$protectedSettingsFile" `
-            --output table
-
-        if ($LASTEXITCODE -eq 0) {
-            $extensionApplied = $true
-            break
-        }
-
-        if ($attempt -lt 4) {
-            Write-Info "  Warning: Custom Script Extension attempt $attempt failed. Waiting 45 seconds before retrying..."
-            Start-Sleep -Seconds 45
-        }
-    }
-
-    Remove-Item $settingsFile, $protectedSettingsFile -Force -ErrorAction SilentlyContinue
-
-    if (-not $extensionApplied) {
-        Write-Error 'Custom Script Extension failed after multiple attempts.'
+    if (-not $bootstrapSucceeded) {
+        Write-Error 'VM application bootstrap failed after multiple attempts.'
         exit 1
     }
 
-    $null = Sync-KeyVaultSecretValue -VaultName $keyVaultName -SecretName 'chatapp-content-hash' -SecretValue $localContentHash
+    if (-not (Sync-KeyVaultSecretValue -VaultResourceId $keyVaultResourceId -SecretName 'chatapp-content-hash' -SecretValue $localContentHash)) {
+        Write-Error 'Application bootstrap succeeded, but the content hash could not be recorded.'
+        exit 1
+    }
     Write-Exists '  Stored new app content hash.'
 }
 
-Write-Task 'Resetting VM admin password from Key Vault...'
-Write-Info "[Custom Script Extension] completed in $($phaseWatch.Elapsed.ToString('mm\:ss'))"
+Write-Task 'Applying the deployment VM admin password...'
+Write-Info "[VM application bootstrap] completed in $($phaseWatch.Elapsed.ToString('mm\:ss'))"
 $phaseWatch.Restart()
-$kvSecretJson = az keyvault secret show `
-    --vault-name $keyVaultName `
-    --name 'vm-admin-password' `
-    --query '{value:value,id:id}' `
-    --output json 2>$null
 
-if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($kvSecretJson)) {
-    Write-Error "  Unable to read 'vm-admin-password' from Key Vault — cannot guarantee VM credentials."
+if ([string]::IsNullOrWhiteSpace($VmAdminPassword)) {
+    Write-Error '  The deployment VM password is empty.'
     exit 1
 }
-
-try {
-    $kvSecret = $kvSecretJson | ConvertFrom-Json
-} catch {
-    Write-Error "  Unable to parse Key Vault secret payload for 'vm-admin-password'."
-    exit 1
-}
-
-$kvVmPassword = if ($kvSecret.value) { $kvSecret.value.Trim() } else { '' }
-$kvVmPasswordVersion = if ($kvSecret.id) { ($kvSecret.id -split '/')[-1] } else { '<unknown>' }
-
-if ([string]::IsNullOrWhiteSpace($kvVmPassword)) {
-    Write-Error "  Key Vault secret 'vm-admin-password' is empty."
-    exit 1
-}
+$kvVmPassword = $VmAdminPassword
 
 $vmReady = Ensure-VmRunning `
     -ResourceGroupName $CoreResourceGroupName `
@@ -1870,7 +1900,7 @@ if (-not $vmReady) {
     exit 1
 }
 
-Write-Info "  Applying vm-admin-password from Key Vault version $kvVmPasswordVersion."
+Write-Info '  Applying the same password supplied to the VM deployment and stored in Key Vault.'
 $resetSucceeded = Update-VmUserPassword `
     -ResourceGroupName $CoreResourceGroupName `
     -VmName $vmName `
@@ -1878,11 +1908,47 @@ $resetSucceeded = Update-VmUserPassword `
     -Password $kvVmPassword
 
 if ($resetSucceeded) {
-    Write-Exists "  VM password reset to Key Vault secret version $kvVmPasswordVersion for user '$VmAdminUsername'."
+    Write-Exists "  VM password applied for user '$VmAdminUsername'."
 } else {
     Write-Error "  Failed to reset VM password after multiple attempts."
     exit 1
 }
 
 Write-Info "[VM password reset] completed in $($phaseWatch.Elapsed.ToString('mm\:ss'))"
+
+if ($isCi) {
+    Write-Info 'VM credentials are not printed or written to a workspace file in CI.'
+    Write-Info 'Supply -VmAdminPassword from the CI secret store and retrieve it from that store when needed.'
+} else {
+    $repositoryRoot = (Resolve-Path (Join-Path $scriptRoot '..')).Path
+    $credentialDirectory = Join-Path $repositoryRoot '.local\credentials'
+    $credentialFile = Join-Path $credentialDirectory "vm-$EnvironmentSuffix.credentials.txt"
+    New-Item -ItemType Directory -Path $credentialDirectory -Force | Out-Null
+
+    $credentialContent = @(
+        "VM name: $vmName"
+        "Public IP: $vmPublicIpAddress"
+        "Username: $VmAdminUsername"
+        "Password: $VmAdminPassword"
+        "Generated: $([DateTimeOffset]::Now.ToString('o'))"
+    )
+    Set-Content -LiteralPath $credentialFile -Value $credentialContent -Encoding utf8NoBOM
+    if ([System.Environment]::OSVersion.Platform -eq [System.PlatformID]::Win32NT) {
+        $currentIdentity = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
+        & icacls.exe $credentialFile /inheritance:r /grant:r "${currentIdentity}:(F)" *> $null
+        if ($LASTEXITCODE -ne 0) {
+            Write-Info "  Warning: could not restrict file permissions on '$credentialFile'. Delete it immediately after saving the password."
+        }
+    }
+
+    Write-Info ''
+    Write-Needed 'VM LOGIN CREDENTIALS'
+    Write-Info "  VM / host : $vmName ($vmPublicIpAddress)"
+    Write-Info "  Username  : $VmAdminUsername"
+    Write-Info "  Password  : $VmAdminPassword"
+    Write-Info "  Saved to  : $credentialFile"
+    Write-Needed 'Store this password in a password manager, then delete the credential file.'
+    Write-Needed 'After confirming RDP access, change the VM password and update your password manager.'
+}
+
 Write-Exists 'Deployment complete.'

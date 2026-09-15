@@ -129,6 +129,9 @@ function Read-EnterpriseEnvironmentConfig {
         throw "Environment variables file not found: $envYamlPath"
     }
     $envConfig = & $parseYaml $envYamlPath
+    if ($envConfig.Contains('environmentSuffix') -and $envConfig['environmentSuffix'] -ne $EnvironmentSuffix) {
+        throw "environmentSuffix '$($envConfig['environmentSuffix'])' in $envYamlPath must match '$EnvironmentSuffix'"
+    }
     foreach ($key in $envConfig.Keys) {
         $config[$key] = $envConfig[$key]   # env layer wins on collision
     }
@@ -137,8 +140,16 @@ function Read-EnterpriseEnvironmentConfig {
     $requiredKeys = @(
         'baseName',
         'location',
+        'vnetAddressSpace',
+        'servicesSubnetAddressPrefix',
+        'vmSubnetAddressPrefix',
+        'vmAcceleratedNetworking',
         'skuName',
+        'storageAccessTier',
         'containerName',
+        'storageBlobSoftDeleteRetentionDays',
+        'storageContainerSoftDeleteRetentionDays',
+        'keyVaultSoftDeleteRetentionDays',
         'modelDeploymentName',
         'modelName',
         'modelVersion',
@@ -152,6 +163,12 @@ function Read-EnterpriseEnvironmentConfig {
         'openaiApiVersion',
         'mlApiVersion',
         'vmAdminUsername',
+        'vmSize',
+        'vmImagePublisher',
+        'vmImageOffer',
+        'vmImageSku',
+        'vmImageVersion',
+        'vmOsDiskStorageAccountType',
         'vmUseSpot',
         'vmSpotMaxPrice',
         'vmAutoShutdownEnabled',
@@ -177,7 +194,15 @@ function Read-EnterpriseEnvironmentConfig {
     }
 
     # ---- Validate integer fields ----
-    $integerKeys = @('capacityK', 'secondaryCapacityK', 'vmSpotMaxPrice', 'logAnalyticsRetentionDays')
+    $integerKeys = @(
+        'capacityK',
+        'secondaryCapacityK',
+        'storageBlobSoftDeleteRetentionDays',
+        'storageContainerSoftDeleteRetentionDays',
+        'keyVaultSoftDeleteRetentionDays',
+        'vmSpotMaxPrice',
+        'logAnalyticsRetentionDays'
+    )
     $invalidIntegerKeys = [System.Collections.Generic.List[string]]::new()
     foreach ($key in $integerKeys) {
         if ([string]$config[$key] -notmatch '^-?\d+$') {
@@ -191,6 +216,58 @@ function Read-EnterpriseEnvironmentConfig {
 
     if ([string]$config['logAnalyticsDailyQuotaGb'] -notmatch '^-?\d+(\.\d+)?$') {
         throw "Invalid numeric value 'logAnalyticsDailyQuotaGb' in merged config"
+    }
+    if ([decimal]$config['logAnalyticsDailyQuotaGb'] -ne -1 -and [decimal]$config['logAnalyticsDailyQuotaGb'] -le 0) {
+        throw "logAnalyticsDailyQuotaGb must be -1 or a positive number"
+    }
+
+    $allowedValues = @{
+        skuName = @('Standard_LRS', 'Standard_GRS', 'Standard_ZRS')
+        storageAccessTier = @('Hot', 'Cool')
+        vmOsDiskStorageAccountType = @('Standard_LRS', 'StandardSSD_LRS', 'Premium_LRS')
+    }
+    foreach ($key in $allowedValues.Keys) {
+        if ([string]$config[$key] -notin $allowedValues[$key]) {
+            throw "Invalid value '$($config[$key])' for '$key'. Allowed values: $($allowedValues[$key] -join ', ')"
+        }
+    }
+
+    $booleanKeys = @(
+        'vmAcceleratedNetworking',
+        'vmUseSpot',
+        'vmAutoShutdownEnabled',
+        'privateAiWorkspacesOnly',
+        'enableAuditDiagnostics'
+    )
+    foreach ($key in $booleanKeys) {
+        if ([string]$config[$key] -notin @('true', 'false')) {
+            throw "Invalid boolean value '$($config[$key])' for '$key'. Allowed values: true, false"
+        }
+    }
+
+    if ([int]$config['storageBlobSoftDeleteRetentionDays'] -lt 0 -or [int]$config['storageBlobSoftDeleteRetentionDays'] -gt 365) {
+        throw "storageBlobSoftDeleteRetentionDays must be 0-365"
+    }
+    if ([int]$config['storageContainerSoftDeleteRetentionDays'] -lt 0 -or [int]$config['storageContainerSoftDeleteRetentionDays'] -gt 365) {
+        throw "storageContainerSoftDeleteRetentionDays must be 0-365"
+    }
+    if ([int]$config['keyVaultSoftDeleteRetentionDays'] -lt 7 -or [int]$config['keyVaultSoftDeleteRetentionDays'] -gt 90) {
+        throw "keyVaultSoftDeleteRetentionDays must be 7-90"
+    }
+    if ([int]$config['logAnalyticsRetentionDays'] -lt 30 -or [int]$config['logAnalyticsRetentionDays'] -gt 730) {
+        throw "logAnalyticsRetentionDays must be 30-730"
+    }
+    if ([int]$config['capacityK'] -lt 1 -or [int]$config['secondaryCapacityK'] -lt 1) {
+        throw "capacityK and secondaryCapacityK must be positive integers"
+    }
+    if ([int]$config['vmSpotMaxPrice'] -lt -1) {
+        throw "vmSpotMaxPrice must be -1 or a nonnegative whole number"
+    }
+    if ([string]$config['modelDeploymentName'] -eq [string]$config['secondaryModelDeploymentName']) {
+        throw "modelDeploymentName and secondaryModelDeploymentName must be different"
+    }
+    if ([string]$config['vmAutoShutdownTime'] -notmatch '^([01]\d|2[0-3])[0-5]\d$') {
+        throw "vmAutoShutdownTime must use 24-hour HHmm format"
     }
 
     # ---- Inject environmentSuffix into the result ----

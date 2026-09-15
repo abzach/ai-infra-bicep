@@ -6,6 +6,12 @@ param vnetName string
 @description('Address space for the VNet.')
 param addressSpace string = '10.0.0.0/16'
 
+@description('Address prefix for the private endpoints and services subnet.')
+param servicesSubnetAddressPrefix string = '10.0.1.0/24'
+
+@description('Address prefix for the VM subnet.')
+param vmSubnetAddressPrefix string = '10.0.2.0/24'
+
 @description('Azure region.')
 param location string
 
@@ -18,14 +24,17 @@ param vmName string
 @description('IPv4 CIDRs allowed to RDP into the VM (for example: 203.0.113.10/32). Leave empty to block all RDP.')
 param rdpAllowedIpCidrs array = []
 
+@description('Enable accelerated networking on the VM network interface.')
+param acceleratedNetworkingEnabled bool = true
+
 var subnets = [
   {
     name: 'services'
-    addressPrefix: '10.0.1.0/24'
+    addressPrefix: servicesSubnetAddressPrefix
   }
   {
     name: 'vm'
-    addressPrefix: '10.0.2.0/24'
+    addressPrefix: vmSubnetAddressPrefix
   }
 ]
 
@@ -189,6 +198,7 @@ resource nic 'Microsoft.Network/networkInterfaces@2024-01-01' = {
   location: location
   tags: tags
   properties: {
+    enableAcceleratedNetworking: acceleratedNetworkingEnabled
     networkSecurityGroup: {
       id: networkSecurityGroup.id
     }

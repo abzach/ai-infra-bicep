@@ -1,4 +1,4 @@
-metadata description = 'Azure OpenAI account with GPT-4.1 mini and GPT-4o mini deployments.'
+metadata description = 'Azure OpenAI account with GPT-4.1 mini and GPT-4.1 nano deployments.'
 
 @description('Azure OpenAI account name. Must be globally unique.')
 param openAiAccountName string
@@ -19,21 +19,23 @@ param modelVersion string = '2025-04-14'
 param modelSkuName string = 'GlobalStandard'
 
 @description('Tokens-per-minute capacity in thousands for the primary deployment.')
+@minValue(1)
 param capacityK int = 10
 
-@description('Deployment name for the secondary model (GPT-4o mini).')
-param secondaryModelDeploymentName string = 'gpt-4o-mini'
+@description('Deployment name for the secondary model (GPT-4.1 nano).')
+param secondaryModelDeploymentName string = 'gpt-4-1-nano'
 
-@description('Model family name for the secondary deployment (e.g. gpt-4o-mini).')
-param secondaryModelName string = 'gpt-4o-mini'
+@description('Model family name for the secondary deployment (e.g. gpt-4.1-nano).')
+param secondaryModelName string = 'gpt-4.1-nano'
 
-@description('Model version for the secondary deployment (e.g. 2024-07-18).')
-param secondaryModelVersion string = '2024-07-18'
+@description('Model version for the secondary deployment (e.g. 2025-04-14).')
+param secondaryModelVersion string = '2025-04-14'
 
 @description('Provisioning SKU for the secondary deployment (e.g. GlobalStandard).')
 param secondaryModelSkuName string = 'GlobalStandard'
 
 @description('Tokens-per-minute capacity in thousands for the secondary deployment.')
+@minValue(1)
 param secondaryCapacityK int = 8
 
 @description('Log Analytics workspace resource ID used for diagnostics.')

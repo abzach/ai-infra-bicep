@@ -61,7 +61,9 @@ stages:
               scriptType: pscore
               scriptLocation: scriptPath
               scriptPath: scripts/deploy.ps1
-              arguments: -EnvironmentSuffix $(environmentSuffix)
+              arguments: -EnvironmentSuffix $(environmentSuffix) -VmAdminPassword $env:VM_ADMIN_PASSWORD
+            env:
+              VM_ADMIN_PASSWORD: $(vmAdminPassword)
 
   - stage: Validate
     displayName: Validate phase

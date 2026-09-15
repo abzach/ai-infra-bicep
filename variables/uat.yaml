@@ -1,17 +1,21 @@
-# uat.yaml — uat environment-specific values.
+# UAT overrides. All unspecified values are inherited from core.yaml.
 
 variables:
-  environmentSuffix: uat
-  baseName: mstech # Short prefix used for all resource names (max 5-8 chars)
+  environmentSuffix: uat # Environment token used in names and tags; allowed value in this file: uat.
+  baseName: mstech # Short lowercase naming prefix; 1-10 alphanumeric characters, kept short for the 24-character storage-name limit.
 
-  skuName: Standard_LRS  # Storage redundancy
+  skuName: Standard_LRS # Storage redundancy SKU; allowed values: Standard_LRS, Standard_GRS, Standard_ZRS.
+  modelSkuName: GlobalStandard # Primary model deployment SKU; commonly GlobalStandard, DataZoneStandard, or Standard when supported.
+  secondaryModelSkuName: GlobalStandard # Secondary model deployment SKU; must be supported by the selected model and region.
+  capacityK: 20 # Primary model throughput in thousands of tokens per minute; allowed value depends on model/SKU quota.
+  secondaryCapacityK: 10 # Secondary model throughput in thousands of tokens per minute; allowed value depends on model/SKU quota.
 
-  capacityK: 20          # TPM capacity for the primary model deployment
-  secondaryCapacityK: 10 # TPM capacity for the secondary model deployment
+  vmSize: Standard_L2as_v4 # Azure VM SKU; must be available in swedencentral.
+  vmImageSku: win11-24h2-ent-cpc-m365 # Marketplace image SKU used with the shared publisher, offer, and version.
+  vmOsDiskStorageAccountType: Standard_LRS # Managed OS disk SKU; allowed values: Standard_LRS, StandardSSD_LRS, Premium_LRS.
+  vmUseSpot: false # Uses interruptible Spot capacity for lower cost; allowed values: true, false.
 
-  vmUseSpot: false # Set true to use Spot VM pricing (may be evicted under capacity pressure)
+  tagEnvironment: uat # Value for the environment resource tag; normally matches environmentSuffix.
 
-  tagEnvironment: uat
-
-  adminObjectIds: '<REPLACE_WITH_COMMA_SEPARATED_ENTRA_OBJECT_IDS>'   # Required: comma-separated Entra ID object IDs as 'guid1,guid2'
-  serviceConnection: '<REPLACE_WITH_SERVICE_CONNECTION_NAME>'         # Optional: Azure DevOps service connection name used by pipeline
+  adminObjectIds: '<REPLACE_WITH_COMMA_SEPARATED_ENTRA_OBJECT_IDS>' # Comma-separated Entra object IDs granted deployment administration roles; replace with one or more GUIDs.
+  serviceConnection: '<REPLACE_WITH_SERVICE_CONNECTION_NAME>' # Azure DevOps service connection used by pipelines; ignored by local deploy.ps1.
