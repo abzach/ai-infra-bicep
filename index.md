@@ -1,6 +1,8 @@
-# Repository index
+﻿# Repository index
 
 - [Project overview and deployment guide](README.md)
+- [Architecture & deep documentation catalog](docs/README.md)
+- [Architecture documentation index](docs/index.md)
 - [Contributor and coding-agent guidance](AGENTS.md)
 - [Application](app/README.md)
 - [Bicep infrastructure](bicep/README.md)

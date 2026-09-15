@@ -1,4 +1,4 @@
-# Script index
+﻿# Script index
 
 - [Automation overview](README.md)
 - [`deploy.ps1`](deploy.ps1)
@@ -8,3 +8,5 @@
 - [`setup.ps1`](setup.ps1)
 - [`test.ps1`](test.ps1)
 - [`security-scan.ps1`](security-scan.ps1)
+- [Architecture documentation](../docs/README.md)
+- [Root index](../index.md)

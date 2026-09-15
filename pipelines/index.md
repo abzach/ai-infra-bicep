@@ -1,7 +1,7 @@
-# Pipeline index
+﻿# Pipeline index
 
 - [Azure DevOps overview](README.md)
-- [Deploy dev](deploy-dev.yml)
-- [Deploy uat](deploy-uat.yml)
-- [Cleanup dev](cleanup-dev.yml)
-- [Cleanup uat](cleanup-uat.yml)
+- [Deploy pipeline](deploy.yml)
+- [Cleanup pipeline](cleanup.yml)
+- [Pipelines documentation](../docs/azure-pipelines.md)
+- [Root index](../index.md)

@@ -1,8 +1,17 @@
+﻿parameters:
+  - name: environment
+    displayName: Environment
+    type: string
+    default: dev
+    values:
+      - dev
+      - uat
+
 trigger: none
 pr: none
 
 variables:
-  - template: ../variables/dev.yaml
+  - template: ../variables/${{ parameters.environment }}.yaml
 
 stages:
   - stage: Preview
@@ -20,7 +29,7 @@ stages:
               scriptType: pscore
               scriptLocation: scriptPath
               scriptPath: scripts/cleanup.ps1
-              arguments: -EnvironmentSuffix $(environmentSuffix) -WhatIf
+              arguments: -EnvironmentSuffix ${{ parameters.environment }} -WhatIf
 
   - stage: Destroy
     displayName: Destroy resources
@@ -38,5 +47,4 @@ stages:
               scriptType: pscore
               scriptLocation: scriptPath
               scriptPath: scripts/cleanup.ps1
-              arguments: -EnvironmentSuffix $(environmentSuffix) -Force
-
+              arguments: -EnvironmentSuffix ${{ parameters.environment }} -Force

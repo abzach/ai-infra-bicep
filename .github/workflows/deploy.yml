@@ -1,7 +1,16 @@
-name: Deploy
+﻿name: Deploy
 
 on:
   workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Target environment'
+        required: true
+        default: 'dev'
+        type: choice
+        options:
+          - dev
+          - uat
 
 permissions:
   id-token: write
@@ -24,7 +33,7 @@ jobs:
 
       - name: Planning deployment
         shell: pwsh
-        run: ./scripts/deploy.ps1 -EnvironmentSuffix dev -WhatIf
+        run: ./scripts/deploy.ps1 -EnvironmentSuffix ${{ inputs.environment }} -WhatIf
 
   deploy:
     name: Deploy
@@ -45,7 +54,7 @@ jobs:
         shell: pwsh
         env:
           VM_ADMIN_PASSWORD: ${{ secrets.VM_ADMIN_PASSWORD }}
-        run: ./scripts/deploy.ps1 -EnvironmentSuffix dev -VmAdminPassword $env:VM_ADMIN_PASSWORD
+        run: ./scripts/deploy.ps1 -EnvironmentSuffix ${{ inputs.environment }} -VmAdminPassword $env:VM_ADMIN_PASSWORD
 
   validate:
     name: Validate
@@ -65,4 +74,4 @@ jobs:
       - name: Validating deployment
         continue-on-error: true
         shell: pwsh
-        run: ./scripts/test.ps1 -Mode Validate -EnvironmentSuffix dev
+        run: ./scripts/test.ps1 -Mode Validate -EnvironmentSuffix ${{ inputs.environment }}

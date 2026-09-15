@@ -1,8 +1,17 @@
+﻿parameters:
+  - name: environment
+    displayName: Environment
+    type: string
+    default: dev
+    values:
+      - dev
+      - uat
+
 trigger: none
 pr: none
 
 variables:
-  - template: ../variables/uat.yaml
+  - template: ../variables/${{ parameters.environment }}.yaml
 
 stages:
   - stage: Security
@@ -43,7 +52,7 @@ stages:
               scriptType: pscore
               scriptLocation: scriptPath
               scriptPath: scripts/deploy.ps1
-              arguments: -EnvironmentSuffix $(environmentSuffix) -WhatIf
+              arguments: -EnvironmentSuffix ${{ parameters.environment }} -WhatIf
 
   - stage: Deploy
     displayName: Deploy phase
@@ -61,7 +70,7 @@ stages:
               scriptType: pscore
               scriptLocation: scriptPath
               scriptPath: scripts/deploy.ps1
-              arguments: -EnvironmentSuffix $(environmentSuffix) -VmAdminPassword $env:VM_ADMIN_PASSWORD
+              arguments: -EnvironmentSuffix ${{ parameters.environment }} -VmAdminPassword $env:VM_ADMIN_PASSWORD
             env:
               VM_ADMIN_PASSWORD: $(vmAdminPassword)
 
@@ -82,4 +91,4 @@ stages:
               scriptType: pscore
               scriptLocation: scriptPath
               scriptPath: scripts/test.ps1
-              arguments: -Mode Validate -EnvironmentSuffix $(environmentSuffix)
+              arguments: -Mode Validate -EnvironmentSuffix ${{ parameters.environment }}

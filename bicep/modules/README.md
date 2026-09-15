@@ -1,18 +1,18 @@
-# Bicep modules
+﻿# Bicep modules
 
-| Module | Responsibility |
-|---|---|
-| `network.bicep` | VNet, subnets, NSG, NIC, public IP, and private DNS |
-| `managedidentity.bicep` | User-assigned managed identity |
-| `managedidentityroles.bicep` | Least-privilege workload data-plane roles |
-| `storageaccount.bicep` | Private Storage account and blob container |
-| `keyvault.bicep` | Private RBAC-enabled Key Vault |
-| `openai.bicep` | Private Azure OpenAI account and two model deployments |
-| `privateendpoint.bicep` | Reusable private endpoint and DNS zone group |
-| `aihub.bicep` | Private AI Hub workspace and connection |
-| `aiproject.bicep` | Private AI Project workspace |
-| `loganalytics.bicep` | Log Analytics workspace |
-| `vm.bicep` | Windows jumpbox, extensions, and auto-shutdown |
+| Module | Responsibility | Dedicated Documentation |
+|---|---|---|
+| `network.bicep` | VNet, subnets, NSG, NIC, public IP, and private DNS | [Virtual Network Doc](../../docs/virtual-network.md) |
+| `managedidentity.bicep` | User-assigned managed identity | [Managed Identity Doc](../../docs/managed-identity.md) |
+| `managedidentityroles.bicep` | Least-privilege workload data-plane roles | [RBAC Doc](../../docs/role-based-access-control.md) |
+| `storageaccount.bicep` | Private Storage account and blob container | [Storage Account Doc](../../docs/storage-account.md) |
+| `keyvault.bicep` | Private RBAC-enabled Key Vault | [Key Vault Doc](../../docs/key-vault.md) |
+| `openai.bicep` | Private Azure OpenAI account and two model deployments | [Azure OpenAI Doc](../../docs/azure-openai.md) |
+| `privateendpoint.bicep` | Reusable private endpoint and DNS zone group | [Private Endpoints Doc](../../docs/private-endpoints.md) |
+| `aihub.bicep` | Private AI Hub workspace and connection | [AI Hub Doc](../../docs/ai-hub.md) |
+| `aiproject.bicep` | Private AI Project workspace | [AI Project Doc](../../docs/ai-project.md) |
+| `loganalytics.bicep` | Log Analytics workspace | [Log Analytics Doc](../../docs/log-analytics.md) |
+| `vm.bicep` | Windows jumpbox, extensions, and auto-shutdown | [Virtual Machine Doc](../../docs/virtual-machine.md) |
 
 Modules are orchestrated by `../templates/main.bicep`. Keep module interfaces explicit and preserve the security invariants in the root `AGENTS.md`.
 

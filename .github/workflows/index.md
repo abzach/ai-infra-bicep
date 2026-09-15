@@ -1,5 +1,8 @@
-# Workflow index
+﻿# Workflow index
 
 - [Workflow overview](README.md)
-- [Deploy development](deploy-dev.yml)
-- [Cleanup development](cleanup-dev.yml)
+- [Deploy workflow](deploy.yml)
+- [Cleanup workflow](cleanup.yml)
+- [Workflows documentation](../../docs/github-actions.md)
+- [CI/CD security](../../docs/ci-cd-security.md)
+- [Root index](../../index.md)

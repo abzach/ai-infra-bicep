@@ -1,7 +1,16 @@
-name: Cleanup
+﻿name: Cleanup
 
 on:
   workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Target environment to cleanup'
+        required: true
+        default: 'dev'
+        type: choice
+        options:
+          - dev
+          - uat
 
 permissions:
   id-token: write
@@ -24,7 +33,7 @@ jobs:
 
       - name: Preview resources
         shell: pwsh
-        run: ./scripts/cleanup.ps1 -EnvironmentSuffix dev -WhatIf
+        run: ./scripts/cleanup.ps1 -EnvironmentSuffix ${{ inputs.environment }} -WhatIf
 
   destroy:
     name: Delete resource groups
@@ -43,4 +52,4 @@ jobs:
 
       - name: Delete resource groups
         shell: pwsh
-        run: ./scripts/cleanup.ps1 -EnvironmentSuffix dev -Force
+        run: ./scripts/cleanup.ps1 -EnvironmentSuffix ${{ inputs.environment }} -Force

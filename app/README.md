@@ -1,4 +1,4 @@
-# Chat App
+﻿# Chat App
 
 Python terminal application for Azure OpenAI running on the jumpbox VM. Two files handle distinct responsibilities:
 
@@ -96,5 +96,7 @@ Deactivate the virtual environment when done:
 ```powershell
 deactivate
 ```
+
+For complete technical specifications, architecture diagrams, and authentication details, see the [Python Chat Application Documentation](../docs/chat-application.md).
 
 Update this README whenever the app's runtime behavior, environment variables, or dependencies change; see [../.github/instructions/documentation-sync.instructions.md](../.github/instructions/documentation-sync.instructions.md).

@@ -1,4 +1,4 @@
-# Deploy an enterprise-grade Azure AI Foundry environment
+﻿# Deploy an enterprise-grade Azure AI Foundry environment
 
 This repository provides a streamlined, security-conscious Bicep deployment for Azure AI Foundry and commonly used supporting Azure services. It is designed for learners, developers, and platform engineers who want a practical private-network environment without starting from an empty template.
 
@@ -70,12 +70,15 @@ git remote set-url origin https://dev.azure.com/<org>/<project>/_git/<repo>
 git push -u origin main
 ```
 
-- Create a pipeline that points to the appropriate file under `pipelines/`.
+- Create a pipeline that points to `pipelines/deploy.yml` or `pipelines/cleanup.yml`.
 - Configure Azure service connection.
 - Define `vmAdminPassword` as a protected secret variable or variable-group value.
-- Update `variables/dev.yaml` with your environment values before you run the pipeline.
+- Update `variables/dev.yaml` or `variables/uat.yaml` with your environment values before you run the pipeline.
 
-For GitHub Actions, configure OIDC and add repository secrets `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID`, and `VM_ADMIN_PASSWORD`.
+For GitHub Actions, configure OIDC and add repository secrets `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID`, and `VM_ADMIN_PASSWORD`. Run `.github/workflows/deploy.yml` or `.github/workflows/cleanup.yml` with your chosen target environment.
+
+For detailed architecture diagrams, threat models, CI/CD security guidelines, and per-resource tabular specifications, see the [Architecture Documentation](docs/README.md).
+
 
 ## Overview
 
