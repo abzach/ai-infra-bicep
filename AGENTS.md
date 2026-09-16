@@ -13,7 +13,7 @@ This repository deploys a private Azure AI Foundry learning environment with sta
 - `scripts/config.ps1` merges and validates YAML configuration.
 - `scripts/deploy.ps1` non-interactively updates Bicep, validates Azure context, exits early for already-current environments, deploys Bicep when needed, publishes runbooks before linking schedules, writes Key Vault secrets through ARM, bootstraps the VM through Run Command, applies the VM password, and emits a timing summary for performance tuning.
 - `automation/` contains PowerShell runbooks automatically validated and published by `scripts/deploy.ps1`.
-- `scripts/test.ps1` provides `Static`, `Validate`, `Smoke`, and `ChatDual` modes.
+- `scripts/test.ps1` provides `Static`, `Validate`, `Smoke`, and `ChatDual` modes; static Bicep builds use the platform temporary directory so local and Linux CI runs behave consistently.
 - `scripts/security-scan.ps1` validates generated IaC security invariants.
 - `scripts/cleanup.ps1` deletes only tag-validated environment resource groups.
 - `app/` contains the managed-identity Python chat and connectivity test.

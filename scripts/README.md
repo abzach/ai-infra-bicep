@@ -7,7 +7,7 @@
 | `config.ps1` | Seed missing `variables/*.yaml` from their `.example`, then parse, merge, derive, and validate YAML configuration including deployment-flag dependencies |
 | `common.ps1` | Shared output, retry, and resource helpers |
 | `setup.ps1` | Install and configure the chat application inside the VM |
-| `test.ps1` | Static, deployed-resource, smoke, and dual-model tests |
+| `test.ps1` | Static, deployed-resource, smoke, and dual-model tests; static builds use the platform temporary directory on Windows and Linux |
 | `security-scan.ps1` | Validate generated template security invariants |
 | `scan-ai-safety.ps1` | Scan markdown and instruction files for AI safety, prompt injections, jailbreaks, hidden unicode smuggling, and harmful instructions |
 

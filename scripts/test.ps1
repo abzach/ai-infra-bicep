@@ -114,7 +114,7 @@ if ($Mode -eq 'Static') {
 
         Write-Task "  [1/2] Building template..."
         try {
-            $outFile = Join-Path $env:TEMP "enterprise-$fileName.json"
+            $outFile = Join-Path ([System.IO.Path]::GetTempPath()) "enterprise-$fileName.json"
             az bicep build --file $templateFile --outfile $outFile 2>&1 | Out-Null
             if (Test-Path $outFile) {
                 Remove-Item $outFile -Force
