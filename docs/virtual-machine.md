@@ -1,6 +1,12 @@
-﻿# Windows Jumpbox Virtual Machine
+# Windows Jumpbox Virtual Machine
 
 This document details the configuration, security profile, extensions, scheduled auto-shutdown, and application bootstrap for the Windows Jumpbox VM provisioned by `bicep/modules/vm.bicep`.
+
+## Deployment flag
+
+This component is controlled by `deployVm` in your environment YAML. When set to `false`, the next `scripts/deploy.ps1` run removes the auto-shutdown schedule, the VM, the OS disk, the NIC, the public IP, and the NSG, and skips application bootstrap and password handling.
+
+The VM admin password is never rotated on a rerun. A new password is issued only on first deploy, when a Spot/Regular priority change forces VM recreation, or when `deploy.ps1` is run with `-RotateVmPassword`.
 
 ## Resource Overview
 
@@ -8,7 +14,8 @@ The Windows 11 Enterprise Jumpbox VM operates inside the private virtual network
 
 - **Resource Name:** `vm-<baseName>-<environmentSuffix>-<nameSuffix>`
 - **Resource Type:** `Microsoft.Compute/virtualMachines@2024-03-01`
-- **Default Size:** `Standard_L2as_v4`
+- **Size:** `vmSize` from your environment YAML
+- **Public DNS Name:** Optional `vmPublicIpDnsNameLabel` on the VM public IP; for example `az-swe-aifp` in `swedencentral` creates `az-swe-aifp.swedencentral.cloudapp.azure.com`
 
 ## Important Configuration Settings
 
@@ -16,7 +23,7 @@ The Windows 11 Enterprise Jumpbox VM operates inside the private virtual network
 |---|---|---|
 | **OS Image Publisher** | `microsoftwindowsdesktop` | Windows Client image publisher |
 | **OS Image Offer** | `windows-ent-cpc` | Windows Enterprise Cloud PC image |
-| **OS Image SKU** | `win11-24h2-ent-cpc-m365` | Windows 11 Enterprise 24H2 with Microsoft 365 apps |
+| **OS Image SKU** | `vmImageSku` from your environment YAML | Windows client image SKU |
 | **OS Image Version** | `latest` | Latest marketplace image release |
 | **OS Disk Storage Tier** | `Standard_LRS` | Managed OS disk storage type |
 | **License Type** | `Windows_Client` | Azure Hybrid Benefit for Windows Client licensing |
@@ -24,6 +31,7 @@ The Windows 11 Enterprise Jumpbox VM operates inside the private virtual network
 | **Secure Boot** | `true` | Protects bootloaders against rootkits |
 | **vTPM** | `true` | Enables virtual Trusted Platform Module |
 | **Identity Type** | `SystemAssigned, UserAssigned` | Dual identity; User-Assigned used by Python Chat App |
+| **Public IP DNS Label** | `vmPublicIpDnsNameLabel` from your environment YAML | Optional public DNS label for RDP convenience; leave empty to skip DNS |
 | **Spot VM Capability** | `true` (Dev) / `false` (UAT) | Uses interruptible capacity to minimize compute cost |
 | **Spot Max Price** | `-1` | Bids up to on-demand pricing |
 | **Patch Mode** | `AutomaticByOS` | Automatic Windows guest OS updates |
@@ -48,7 +56,7 @@ To prevent unnecessary costs, the VM includes a DevTestLab auto-shutdown schedul
 | **Status** | `Enabled` | Active schedule |
 | **Task Type** | `ComputeVmShutdownTask` | Shuts down and deallocates compute resources |
 | **Daily Recurrence Time** | `0300` (03:00 AM) | Scheduled time in 24-hour format |
-| **Time Zone** | `India Standard Time` | Local reference timezone |
+| **Time Zone** | `vmAutoShutdownTimeZone` from `variables/core.yaml` | Time zone for the shutdown schedule |
 
 ## Application Bootstrapping
 

@@ -1,12 +1,30 @@
 using './main.bicep'
 
-param adminObjectIds = ['00000000-0000-0000-0000-000000000000']
+// Sample parameter file used for local `az bicep build-params` checks and Bicep MCP deployment
+// snapshots only. deploy.ps1 never reads this file: it generates a parameter file from
+// variables/core.yaml plus variables/<env>.yaml. Keep every value here generic — real
+// environment values belong exclusively in the untracked variables/*.yaml files.
+
+param adminActors = [
+  {
+    objectId: '00000000-0000-0000-0000-000000000000'
+    principalType: 'User'
+  }
+]
+
+param userActors = []
 
 param environmentSuffix = 'dev'
 
-param baseName = 'aistack'
-param location = 'swedencentral'
+param baseName = 'sample'
+param location = 'eastus'
 param skuName = 'Standard_LRS'
+
+param deployStorage = true
+param deployLogAnalytics = true
+param deployAiFoundry = true
+param deployVm = true
+param deployAutomation = true
 
 param storageAccessTier = 'Hot'
 param containerName = 'chatapp'
@@ -14,12 +32,12 @@ param storageBlobSoftDeleteRetentionDays = 7
 param storageContainerSoftDeleteRetentionDays = 7
 param keyVaultSoftDeleteRetentionDays = 7
 
-param modelDeploymentName = 'gpt-4-1-mini'
+param modelDeploymentName = 'primary-model'
 param modelName = 'gpt-4.1-mini'
 param modelVersion = '2025-04-14'
 param modelSkuName = 'GlobalStandard'
 param capacityK = 10
-param secondaryModelDeploymentName = 'gpt-4-1-nano'
+param secondaryModelDeploymentName = 'secondary-model'
 param secondaryModelName = 'gpt-4.1-nano'
 param secondaryModelVersion = '2025-04-14'
 param secondaryModelSkuName = 'GlobalStandard'
@@ -32,10 +50,11 @@ param addressSpace = '10.0.0.0/16'
 param servicesSubnetAddressPrefix = '10.0.1.0/24'
 param vmSubnetAddressPrefix = '10.0.2.0/24'
 param vmAcceleratedNetworking = true
+param vmPublicIpDnsNameLabel = ''
 
 param vmAdminUsername = 'azureadmin'
-param vmAdminPassword = readEnvironmentVariable('VM_ADMIN_PASSWORD')
-param vmSize = 'Standard_L2as_v4'
+param vmAdminPassword = readEnvironmentVariable('VM_ADMIN_PASSWORD', '')
+param vmSize = 'Standard_D2s_v5'
 param vmImagePublisher = 'microsoftwindowsdesktop'
 param vmImageOffer = 'windows-ent-cpc'
 param vmImageSku = 'win11-24h2-ent-cpc-m365'
@@ -45,14 +64,25 @@ param vmUseSpot = false
 param vmSpotMaxPrice = -1
 param vmAutoShutdownEnabled = true
 param vmAutoShutdownTime = '0300'
-param vmAutoShutdownTimeZone = 'India Standard Time'
+param vmAutoShutdownTimeZone = 'UTC'
+param automationRuntimeVersion = '7.4'
+param automationAzVersion = '12.3.0'
+param automationRunbooks = [
+  {
+    name: 'start-vm'
+    sourceHash: '0000000000000000000000000000000000000000000000000000000000000000'
+  }
+]
+param vmStartScheduleEnabled = true
+param vmStartScheduleStartTime = '2026-12-01T11:00:00+00:00'
+param vmStartScheduleTimeZone = 'Etc/UTC'
 param nameSuffix = '0000'
 
 param logAnalyticsRetentionDays = 30
 
 param tags = {
   environment: 'dev'
-  project: 'aistack'
+  project: 'sample'
   workload: 'enterprise-ai-foundry'
   managedBy: 'bicep'
 }

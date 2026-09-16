@@ -22,6 +22,7 @@ Welcome to the comprehensive technical documentation for the Enterprise Azure AI
 - [Azure AI Foundry Project](ai-project.md): Child AI Project workspace for developer experiments.
 - [Log Analytics Workspace](log-analytics.md): Centralized audit and operational diagnostics logging.
 - [Windows Jumpbox VM](virtual-machine.md): Windows 11 jumpbox VM, Trusted Launch, extensions, and DevTestLab auto-shutdown.
+- [Azure Automation Account](automation-account.md): User-assigned identity, repository runbook publication, and daily VM start schedule.
 
 ### Application Stack
 - [Python Terminal Chat Application](chat-application.md): Dual-persona (`Keith` & `Tim`) terminal app, parallel model inference, Rich UI, and token authentication.
@@ -45,7 +46,8 @@ Subscription
        ├── Azure Storage Account (StorageV2, Private Container)
        ├── Log Analytics Workspace (Diagnostics Sink)
        ├── Windows 11 Jumpbox VM (Trusted Launch, Antimalware, ADE, AMA)
-       └── User-Assigned Managed Identities (Hub & VM)
+       ├── Azure Automation Account (PowerShell runbooks, daily VM start)
+       └── User-Assigned Managed Identities (Hub, VM & Automation)
 ```
 
 ## Cross-Codebase Links

@@ -13,8 +13,13 @@
 #   # Force a deployment even when the existing environment is already current
 #   .\deploy.ps1 -EnvironmentSuffix dev -ForceRedeploy
 #
+#   # Rotate the jumpbox password (reruns otherwise keep the existing password)
+#   .\deploy.ps1 -EnvironmentSuffix dev -RotateVmPassword
+#
 # PREREQUISITES
-#   - Azure CLI installed and `az login` completed (Owner, or Contributor plus User Access Administrator on sub)
+#   - Azure CLI installed and `az login` completed. The script preflights and, when possible,
+#     self-grants 'User Access Administrator' at subscription scope (see
+#     .github/instructions/azure-rbac-preflight.instructions.md).
 #   - PowerShell 7+ recommended
 #   - config.ps1 and common.ps1 must be present in the same directory
 
@@ -22,6 +27,8 @@ param(
     [Parameter(Mandatory)] [ValidateSet('dev','uat')] [string] $EnvironmentSuffix,
     [ValidateSet('deploy','myip')] [string] $Action = 'deploy',
     [string] $VmAdminPassword,
+    [switch] $RotateVmPassword,
+    [switch] $SkipRoleElevation,
     [switch] $ForceAppBootstrap,
     [switch] $ForceRedeploy,
     [switch] $WhatIf
@@ -54,6 +61,11 @@ $scriptRoot = Get-CurrentScriptRoot
 
 . (Join-Path $scriptRoot 'config.ps1')
 . (Join-Path $scriptRoot 'common.ps1')
+
+Initialize-ScriptLogging -ScriptRoot $scriptRoot -ScriptName 'deploy.ps1'
+trap { Write-LogEntry -Level 'ERROR' -Message "Unhandled error: $($_.Exception.Message)"; Write-ScriptTimingSummary -Status 'failed' }
+
+Update-BicepCli
 
 function Convert-ToBoolean {
     param(
@@ -504,7 +516,8 @@ function Invoke-VmBootstrapPackage {
     param(
         [Parameter(Mandatory)] [string] $ResourceGroupName,
         [Parameter(Mandatory)] [string] $VmName,
-        [Parameter(Mandatory)] [string[]] $FilePaths
+        [Parameter(Mandatory)] [string[]] $FilePaths,
+        [string] $GuestTimeZone = 'UTC'
     )
 
     $packageRoot = Join-Path ([System.IO.Path]::GetTempPath()) "ai-infra-bootstrap-$PID-$([guid]::NewGuid().ToString('N'))"
@@ -531,6 +544,7 @@ function Invoke-VmBootstrapPackage {
 [System.IO.File]::WriteAllBytes(`$archivePath, [System.Convert]::FromBase64String('$archiveBase64'))
 Remove-Item -LiteralPath `$extractPath -Recurse -Force -ErrorAction SilentlyContinue
 Expand-Archive -LiteralPath `$archivePath -DestinationPath `$extractPath -Force
+`$env:VM_GUEST_TIMEZONE = '$GuestTimeZone'
 & (Join-Path `$extractPath 'setup.ps1')
 Write-Output 'AI_INFRA_BOOTSTRAP_SUCCEEDED'
 "@
@@ -593,6 +607,74 @@ function Update-VmUserPassword {
     }
 
     return $false
+}
+
+function Get-StoredVmCredentialPassword {
+    param(
+        [Parameter(Mandatory)] [string] $CredentialFilePath
+    )
+
+    if (-not (Test-Path -LiteralPath $CredentialFilePath -PathType Leaf)) {
+        return ''
+    }
+
+    try {
+        $passwordLine = Get-Content -LiteralPath $CredentialFilePath |
+            Where-Object { $_ -match '^Password:\s*' } |
+            Select-Object -First 1
+    } catch {
+        return ''
+    }
+
+    if ([string]::IsNullOrWhiteSpace($passwordLine)) {
+        return ''
+    }
+
+    return ($passwordLine -replace '^Password:\s*', '').Trim()
+}
+
+# ---------------------------------------------------------------------------
+# Test-ExistingVmRetainsPassword
+#   Returns $true when the jumpbox already exists and this deployment will not
+#   recreate it, meaning its current admin password must be preserved.
+#   Returns $false when the VM is absent or will be deleted and recreated
+#   because its Spot/Regular priority no longer matches the configuration, in
+#   which case a fresh password has to be generated.
+# ---------------------------------------------------------------------------
+function Test-ExistingVmRetainsPassword {
+    param(
+        [Parameter(Mandatory)] [string] $ResourceGroupName,
+        [Parameter(Mandatory)] [string] $VmName,
+        [Parameter(Mandatory)] [bool] $UseSpot,
+        [Parameter(Mandatory)] [bool] $VmDeploymentEnabled
+    )
+
+    if (-not $VmDeploymentEnabled) {
+        return $true
+    }
+
+    $existingVmId = az vm show `
+        --resource-group $ResourceGroupName `
+        --name $VmName `
+        --query id `
+        --output tsv 2>$null
+    if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($existingVmId)) {
+        return $false
+    }
+
+    $existingPriority = az resource show `
+        --resource-group $ResourceGroupName `
+        --name $VmName `
+        --resource-type 'Microsoft.Compute/virtualMachines' `
+        --query 'properties.priority' `
+        --output tsv 2>$null
+    if ($LASTEXITCODE -ne 0) {
+        # Priority is unreadable, so the later pre-deploy check will not delete the VM either.
+        return $true
+    }
+
+    $existingIsSpot = ($existingPriority -eq 'Spot')
+    return $existingIsSpot -eq $UseSpot
 }
 
 function Get-VmPowerState {
@@ -710,6 +792,13 @@ function Get-DeploymentDesiredStateHash {
         $relativePaths.Add([System.IO.Path]::GetRelativePath($repoRoot, $_.FullName))
     }
 
+    $automationPath = Join-Path $repoRoot 'automation'
+    if (Test-Path -LiteralPath $automationPath -PathType Container) {
+        Get-ChildItem -Path $automationPath -Filter '*.ps1' -File | Sort-Object Name | ForEach-Object {
+            $relativePaths.Add([System.IO.Path]::GetRelativePath($repoRoot, $_.FullName))
+        }
+    }
+
     $sha256 = [System.Security.Cryptography.SHA256]::Create()
     try {
         foreach ($relativePath in ($relativePaths | Sort-Object -Unique)) {
@@ -734,6 +823,250 @@ function Get-DeploymentDesiredStateHash {
     } finally {
         $sha256.Dispose()
     }
+}
+
+function Get-AutomationRunbookDescriptors {
+    param(
+        [Parameter(Mandatory)] [string] $ScriptRoot
+    )
+
+    $automationPath = Join-Path $ScriptRoot '..\automation'
+    if (-not (Test-Path -LiteralPath $automationPath -PathType Container)) {
+        throw "Automation source directory not found: $automationPath"
+    }
+
+    $scriptFiles = @(Get-ChildItem -LiteralPath $automationPath -Filter '*.ps1' -File | Sort-Object Name)
+    if ($scriptFiles.Count -eq 0) {
+        throw "Automation is enabled but no top-level PowerShell runbooks were found in '$automationPath'."
+    }
+
+    $seenNames = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    $descriptors = [System.Collections.Generic.List[object]]::new()
+    foreach ($scriptFile in $scriptFiles) {
+        $runbookName = [System.IO.Path]::GetFileNameWithoutExtension($scriptFile.Name)
+        if ($runbookName -notmatch '^[A-Za-z][A-Za-z0-9_-]*$') {
+            throw "Automation runbook filename '$($scriptFile.Name)' is invalid. Names must start with a letter and contain only letters, numbers, hyphens, and underscores."
+        }
+        if (-not $seenNames.Add($runbookName)) {
+            throw "Automation runbook name '$runbookName' is duplicated without regard to case."
+        }
+
+        $tokens = $null
+        $parseErrors = $null
+        [void][System.Management.Automation.Language.Parser]::ParseFile($scriptFile.FullName, [ref]$tokens, [ref]$parseErrors)
+        if ($parseErrors.Count -gt 0) {
+            $messages = $parseErrors | ForEach-Object { "$($_.Extent.StartLineNumber):$($_.Message)" }
+            throw "Automation runbook '$($scriptFile.Name)' has PowerShell parse errors: $($messages -join '; ')"
+        }
+
+        $descriptors.Add([pscustomobject]@{
+            name = $runbookName
+            sourceHash = (Get-FileHash -LiteralPath $scriptFile.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+            path = $scriptFile.FullName
+        })
+    }
+
+    return @($descriptors)
+}
+
+function Get-AutomationScheduleStartTime {
+    param(
+        [Parameter(Mandatory)] [string] $SubscriptionId,
+        [Parameter(Mandatory)] [string] $ResourceGroupName,
+        [Parameter(Mandatory)] [string] $AutomationAccountName,
+        [Parameter(Mandatory)] [string] $ScheduleName,
+        [Parameter(Mandatory)] [string] $Time,
+        [Parameter(Mandatory)] [string] $TimeZone
+    )
+
+    $scheduleUri = "https://management.azure.com/subscriptions/$SubscriptionId/resourceGroups/$ResourceGroupName/providers/Microsoft.Automation/automationAccounts/$AutomationAccountName/schedules/$ScheduleName`?api-version=2024-10-23"
+    $existingJson = az rest --method get --url $scheduleUri --output json 2>$null
+    if ($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace($existingJson)) {
+        $existingSchedule = $existingJson | ConvertFrom-Json
+        $existingStartTime = [string]$existingSchedule.properties.startTime
+        $existingTimeZone = [string]$existingSchedule.properties.timeZone
+        if ($existingTimeZone -eq $TimeZone -and -not [string]::IsNullOrWhiteSpace($existingStartTime)) {
+            $zone = [System.TimeZoneInfo]::FindSystemTimeZoneById($TimeZone)
+            if ($existingStartTime -match '(Z|[+-]\d{2}:\d{2})$') {
+                $existingLocal = [System.TimeZoneInfo]::ConvertTime(
+                    [DateTimeOffset]::Parse($existingStartTime, [System.Globalization.CultureInfo]::InvariantCulture),
+                    $zone
+                )
+            } else {
+                $existingLocalDateTime = [DateTime]::Parse(
+                    $existingStartTime,
+                    [System.Globalization.CultureInfo]::InvariantCulture,
+                    [System.Globalization.DateTimeStyles]::AllowWhiteSpaces
+                )
+                $existingLocal = [DateTimeOffset]::new(
+                    [DateTime]::SpecifyKind($existingLocalDateTime, [DateTimeKind]::Unspecified),
+                    $zone.GetUtcOffset($existingLocalDateTime)
+                )
+            }
+            if ($existingLocal.ToString('HHmm') -eq $Time) {
+                return $existingLocal.ToString('o')
+            }
+        }
+    }
+
+    $timeZoneInfo = [System.TimeZoneInfo]::FindSystemTimeZoneById($TimeZone)
+    $nowUtc = [DateTimeOffset]::UtcNow
+    $localNow = [System.TimeZoneInfo]::ConvertTime($nowUtc, $timeZoneInfo)
+    $hour = [int]$Time.Substring(0, 2)
+    $minute = [int]$Time.Substring(2, 2)
+    $candidateLocal = [DateTime]::SpecifyKind(
+        [DateTime]::new($localNow.Year, $localNow.Month, $localNow.Day, $hour, $minute, 0),
+        [DateTimeKind]::Unspecified
+    )
+    $candidate = [DateTimeOffset]::new($candidateLocal, $timeZoneInfo.GetUtcOffset($candidateLocal))
+    if ($candidate -le $nowUtc.AddMinutes(15)) {
+        $candidateLocal = $candidateLocal.AddDays(1)
+        $candidate = [DateTimeOffset]::new($candidateLocal, $timeZoneInfo.GetUtcOffset($candidateLocal))
+    }
+
+    return $candidate.ToString('o')
+}
+
+function Wait-AutomationArmOperation {
+    param(
+        [AllowEmptyString()] [string] $OperationUri,
+        [Parameter(Mandatory)] [hashtable] $Headers,
+        [Parameter(Mandatory)] [string] $Description
+    )
+
+    if ([string]::IsNullOrWhiteSpace($OperationUri)) {
+        return
+    }
+
+    for ($attempt = 1; $attempt -le 60; $attempt++) {
+        $operation = Invoke-RestMethod -Method Get -Uri $OperationUri -Headers $Headers -ErrorAction Stop
+        $status = [string]$operation.status
+        if ($status -eq 'Succeeded') {
+            return
+        }
+        if ($status -in @('Failed', 'Canceled')) {
+            throw "$Description failed with status '$status'."
+        }
+        Start-Sleep -Seconds 2
+    }
+
+    throw "$Description did not complete within 120 seconds."
+}
+
+function Wait-AutomationRunbookPublished {
+    param(
+        [Parameter(Mandatory)] [string] $RunbookUri,
+        [Parameter(Mandatory)] [hashtable] $Headers,
+        [Parameter(Mandatory)] [string] $RunbookName
+    )
+
+    for ($attempt = 1; $attempt -le 60; $attempt++) {
+        $runbook = Invoke-RestMethod -Method Get -Uri "$RunbookUri`?api-version=2024-10-23" -Headers $Headers -ErrorAction Stop
+        $state = [string]$runbook.properties.state
+        if ($state -eq 'Published') {
+            return
+        }
+        if ($state -eq 'Suspended') {
+            throw "Runbook '$RunbookName' entered the suspended state while publishing."
+        }
+        Start-Sleep -Seconds 2
+    }
+
+    throw "Runbook '$RunbookName' was not published within 120 seconds."
+}
+
+function Publish-AutomationRunbooks {
+    param(
+        [Parameter(Mandatory)] [string] $SubscriptionId,
+        [Parameter(Mandatory)] [string] $ResourceGroupName,
+        [Parameter(Mandatory)] [string] $AutomationAccountName,
+        [Parameter(Mandatory)] [object[]] $Runbooks
+    )
+
+    $accessToken = Get-AzureArmAccessToken -SubscriptionId $SubscriptionId
+    if ([string]::IsNullOrWhiteSpace($accessToken)) {
+        throw 'Unable to acquire an Azure Resource Manager token for runbook publication.'
+    }
+    $headers = @{ Authorization = "Bearer $accessToken" }
+
+    foreach ($runbook in $Runbooks) {
+        Write-Task "Publishing Automation runbook '$($runbook.name)'..."
+        $baseUri = "https://management.azure.com/subscriptions/$SubscriptionId/resourceGroups/$ResourceGroupName/providers/Microsoft.Automation/automationAccounts/$AutomationAccountName/runbooks/$($runbook.name)"
+        $content = [System.IO.File]::ReadAllText($runbook.path)
+        $replaceResponse = Invoke-WebRequest `
+            -Method Put `
+            -Uri "$baseUri/draft/content?api-version=2024-10-23" `
+            -Headers $headers `
+            -ContentType 'text/plain; charset=utf-8' `
+            -Body $content `
+            -ErrorAction Stop
+        Wait-AutomationArmOperation `
+            -OperationUri ([string]$replaceResponse.Headers['Azure-AsyncOperation']) `
+            -Headers $headers `
+            -Description "Replacing draft content for '$($runbook.name)'"
+
+        $publishResponse = Invoke-WebRequest `
+            -Method Post `
+            -Uri "$baseUri/publish?api-version=2024-10-23" `
+            -Headers $headers `
+            -ContentType 'application/json' `
+            -Body '{}' `
+            -ErrorAction Stop
+        Wait-AutomationArmOperation `
+            -OperationUri ([string]$publishResponse.Headers['Azure-AsyncOperation']) `
+            -Headers $headers `
+            -Description "Publishing '$($runbook.name)'"
+        Wait-AutomationRunbookPublished `
+            -RunbookUri $baseUri `
+            -Headers $headers `
+            -RunbookName $runbook.name
+        Write-Exists "  Runbook '$($runbook.name)' published."
+    }
+}
+
+function Set-AutomationJobSchedule {
+    param(
+        [Parameter(Mandatory)] [string] $SubscriptionId,
+        [Parameter(Mandatory)] [string] $ResourceGroupName,
+        [Parameter(Mandatory)] [string] $AutomationAccountName,
+        [Parameter(Mandatory)] [string] $JobScheduleName,
+        [Parameter(Mandatory)] [string] $ScheduleName,
+        [Parameter(Mandatory)] [string] $RunbookName,
+        [Parameter(Mandatory)] [hashtable] $RunbookParameters
+    )
+
+    $accessToken = Get-AzureArmAccessToken -SubscriptionId $SubscriptionId
+    if ([string]::IsNullOrWhiteSpace($accessToken)) {
+        throw 'Unable to acquire an Azure Resource Manager token for Automation job scheduling.'
+    }
+
+    $headers = @{ Authorization = "Bearer $accessToken" }
+    $jobScheduleUri = "https://management.azure.com/subscriptions/$SubscriptionId/resourceGroups/$ResourceGroupName/providers/Microsoft.Automation/automationAccounts/$AutomationAccountName/jobSchedules/$JobScheduleName`?api-version=2024-10-23"
+    $body = @{
+        properties = @{
+            parameters = $RunbookParameters
+            runbook = @{
+                name = $RunbookName
+            }
+            schedule = @{
+                name = $ScheduleName
+            }
+        }
+    } | ConvertTo-Json -Depth 8
+
+    Write-Task "Linking Automation runbook '$RunbookName' to schedule '$ScheduleName'..."
+    $response = Invoke-WebRequest `
+        -Method Put `
+        -Uri $jobScheduleUri `
+        -Headers $headers `
+        -ContentType 'application/json' `
+        -Body $body `
+        -ErrorAction Stop
+    Wait-AutomationArmOperation `
+        -OperationUri ([string]$response.Headers['Azure-AsyncOperation']) `
+        -Headers $headers `
+        -Description "Linking runbook '$RunbookName' to schedule '$ScheduleName'"
+    Write-Exists "  Runbook '$RunbookName' is linked to schedule '$ScheduleName'."
 }
 
 function Test-AzureResourceCurrent {
@@ -808,6 +1141,16 @@ function Test-EnterpriseDeploymentCurrent {
         [Parameter(Mandatory)] [string] $ProjectName,
         [Parameter(Mandatory)] [string] $HubManagedIdentityName,
         [Parameter(Mandatory)] [string] $VmManagedIdentityName,
+        [Parameter(Mandatory)] [bool] $AutomationEnabled,
+        [Parameter(Mandatory)] [bool] $DeployStorage,
+        [Parameter(Mandatory)] [bool] $DeployLogAnalytics,
+        [Parameter(Mandatory)] [bool] $DeployAiFoundry,
+        [Parameter(Mandatory)] [bool] $DeployVm,
+        [Parameter(Mandatory)] [string] $AutomationAccountName,
+        [Parameter(Mandatory)] [string] $AutomationManagedIdentityName,
+        [Parameter(Mandatory)] [object[]] $AutomationRunbooks,
+        [Parameter(Mandatory)] [bool] $VmStartScheduleEnabled,
+        [Parameter(Mandatory)] [string] $VmStartScheduleName,
         [Parameter(Mandatory)] [string] $VnetName,
         [Parameter(Mandatory)] [string] $VmName,
         [Parameter(Mandatory)] [string] $LogAnalyticsWorkspaceName,
@@ -851,21 +1194,16 @@ function Test-EnterpriseDeploymentCurrent {
     $subScope = "/subscriptions/$SubscriptionId"
     $coreScope = "$subScope/resourceGroups/$CoreResourceGroupName"
     $networkScope = "$subScope/resourceGroups/$NetworkResourceGroupName"
+
+    # Always-on components. These have no deployment flag because they hold deployment state
+    # (Key Vault), or because every other component depends on them (networking, Azure OpenAI,
+    # managed identities).
     $resourceChecks = @(
-        @{ Id = "$coreScope/providers/Microsoft.Storage/storageAccounts/$StorageAccountName"; Description = "Storage account '$StorageAccountName'" }
         @{ Id = "$coreScope/providers/Microsoft.KeyVault/vaults/$KeyVaultName"; Description = "Key Vault '$KeyVaultName'" }
         @{ Id = "$coreScope/providers/Microsoft.CognitiveServices/accounts/$OpenAiAccountName"; Description = "Azure OpenAI account '$OpenAiAccountName'" }
-        @{ Id = "$coreScope/providers/Microsoft.MachineLearningServices/workspaces/$HubName"; Description = "AI Hub '$HubName'" }
-        @{ Id = "$coreScope/providers/Microsoft.MachineLearningServices/workspaces/$ProjectName"; Description = "AI Project '$ProjectName'" }
         @{ Id = "$coreScope/providers/Microsoft.ManagedIdentity/userAssignedIdentities/$HubManagedIdentityName"; Description = "Hub managed identity '$HubManagedIdentityName'" }
         @{ Id = "$coreScope/providers/Microsoft.ManagedIdentity/userAssignedIdentities/$VmManagedIdentityName"; Description = "VM managed identity '$VmManagedIdentityName'" }
-        @{ Id = "$coreScope/providers/Microsoft.OperationalInsights/workspaces/$LogAnalyticsWorkspaceName"; Description = "Log Analytics workspace '$LogAnalyticsWorkspaceName'" }
-        @{ Id = "$coreScope/providers/Microsoft.Compute/virtualMachines/$VmName"; Description = "Jumpbox VM '$VmName'" }
         @{ Id = "$networkScope/providers/Microsoft.Network/virtualNetworks/$VnetName"; Description = "Virtual network '$VnetName'" }
-        @{ Id = "$networkScope/providers/Microsoft.Network/networkSecurityGroups/$VmName-nsg"; Description = "VM NSG '$VmName-nsg'" }
-        @{ Id = "$networkScope/providers/Microsoft.Network/networkInterfaces/$VmName-nic"; Description = "VM NIC '$VmName-nic'" }
-        @{ Id = "$networkScope/providers/Microsoft.Network/publicIPAddresses/$VmName-pip"; Description = "VM public IP '$VmName-pip'" }
-        @{ Id = "$networkScope/providers/Microsoft.Network/privateEndpoints/$StorageAccountName-blob-pe"; Description = "Storage private endpoint '$StorageAccountName-blob-pe'" }
         @{ Id = "$networkScope/providers/Microsoft.Network/privateEndpoints/$KeyVaultName-pe"; Description = "Key Vault private endpoint '$KeyVaultName-pe'" }
         @{ Id = "$networkScope/providers/Microsoft.Network/privateEndpoints/$OpenAiAccountName-account-pe"; Description = "OpenAI private endpoint '$OpenAiAccountName-account-pe'" }
         @{ Id = "$networkScope/providers/Microsoft.Network/privateDnsZones/privatelink.vaultcore.azure.net"; Description = "Key Vault private DNS zone" }
@@ -876,22 +1214,109 @@ function Test-EnterpriseDeploymentCurrent {
         @{ Id = "$networkScope/providers/Microsoft.Network/privateDnsZones/privatelink.openai.azure.com/virtualNetworkLinks/vnet-link"; Description = "OpenAI private DNS VNet link" }
         @{ Id = "$networkScope/providers/Microsoft.Network/privateDnsZones/privatelink.blob.core.windows.net/virtualNetworkLinks/vnet-link"; Description = "Storage private DNS VNet link" }
         @{ Id = "$networkScope/providers/Microsoft.Network/privateDnsZones/privatelink.api.azureml.ms/virtualNetworkLinks/vnet-link"; Description = "Azure ML private DNS VNet link" }
+    )
+
+    # Flagged components: present when the flag is true, absent when it is false.
+    $storageResources = @(
+        @{ Id = "$coreScope/providers/Microsoft.Storage/storageAccounts/$StorageAccountName"; Description = "Storage account '$StorageAccountName'" }
+        @{ Id = "$networkScope/providers/Microsoft.Network/privateEndpoints/$StorageAccountName-blob-pe"; Description = "Storage private endpoint '$StorageAccountName-blob-pe'" }
+    )
+    $logAnalyticsResources = @(
+        @{ Id = "$coreScope/providers/Microsoft.OperationalInsights/workspaces/$LogAnalyticsWorkspaceName"; Description = "Log Analytics workspace '$LogAnalyticsWorkspaceName'" }
+    )
+    $aiFoundryResources = @(
+        @{ Id = "$coreScope/providers/Microsoft.MachineLearningServices/workspaces/$HubName"; Description = "AI Hub '$HubName'" }
+        @{ Id = "$coreScope/providers/Microsoft.MachineLearningServices/workspaces/$ProjectName"; Description = "AI Project '$ProjectName'" }
+    )
+    if ($PrivateAiWorkspacesOnly) {
+        $aiFoundryResources += @{ Id = "$networkScope/providers/Microsoft.Network/privateEndpoints/$HubName-pe"; Description = "AI Hub private endpoint '$HubName-pe'" }
+    }
+    $vmResources = @(
+        @{ Id = "$coreScope/providers/Microsoft.Compute/virtualMachines/$VmName"; Description = "Jumpbox VM '$VmName'" }
+        @{ Id = "$networkScope/providers/Microsoft.Network/networkSecurityGroups/$VmName-nsg"; Description = "VM NSG '$VmName-nsg'" }
+        @{ Id = "$networkScope/providers/Microsoft.Network/networkInterfaces/$VmName-nic"; Description = "VM NIC '$VmName-nic'" }
+        @{ Id = "$networkScope/providers/Microsoft.Network/publicIPAddresses/$VmName-pip"; Description = "VM public IP '$VmName-pip'" }
+        @{ Id = "$coreScope/providers/Microsoft.Compute/disks/$VmName-osdisk"; Description = "VM OS disk '$VmName-osdisk'" }
         @{ Id = "$coreScope/providers/Microsoft.Compute/virtualMachines/$VmName/extensions/AzureMonitorWindowsAgent"; Description = "Azure Monitor Agent VM extension" }
         @{ Id = "$coreScope/providers/Microsoft.Compute/virtualMachines/$VmName/extensions/IaaSAntimalware"; Description = "IaaS Antimalware VM extension" }
         @{ Id = "$coreScope/providers/Microsoft.Compute/virtualMachines/$VmName/extensions/AzureDiskEncryption"; Description = "Azure Disk Encryption VM extension" }
     )
-
-    if ($PrivateAiWorkspacesOnly) {
-        $resourceChecks += @{ Id = "$networkScope/providers/Microsoft.Network/privateEndpoints/$HubName-pe"; Description = "AI Hub private endpoint '$HubName-pe'" }
+    if ($VmAutoShutdownEnabled) {
+        $vmResources += @{ Id = "$coreScope/providers/Microsoft.DevTestLab/schedules/shutdown-computevm-$VmName"; Description = "VM auto-shutdown schedule 'shutdown-computevm-$VmName'" }
     }
 
-    if ($VmAutoShutdownEnabled) {
-        $resourceChecks += @{ Id = "$coreScope/providers/Microsoft.DevTestLab/schedules/shutdown-computevm-$VmName"; Description = "VM auto-shutdown schedule 'shutdown-computevm-$VmName'" }
+    # Resources that must be gone when their flag is false. Checking these keeps the no-op guard
+    # honest: a disabled component that still exists forces the deployment path, which removes it.
+    $absentChecks = @()
+    foreach ($flagged in @(
+        @{ Enabled = $DeployStorage; Resources = $storageResources }
+        @{ Enabled = $DeployLogAnalytics; Resources = $logAnalyticsResources }
+        @{ Enabled = $DeployAiFoundry; Resources = $aiFoundryResources }
+        @{ Enabled = $DeployVm; Resources = $vmResources }
+    )) {
+        if ($flagged.Enabled) {
+            $resourceChecks += $flagged.Resources
+        } else {
+            $absentChecks += $flagged.Resources
+        }
+    }
+
+    if (-not $AutomationEnabled) {
+        $absentChecks += @{ Id = "$coreScope/providers/Microsoft.Automation/automationAccounts/$AutomationAccountName"; Description = "Automation Account '$AutomationAccountName'" }
+        $absentChecks += @{ Id = "$coreScope/providers/Microsoft.ManagedIdentity/userAssignedIdentities/$AutomationManagedIdentityName"; Description = "Automation managed identity '$AutomationManagedIdentityName'" }
+    }
+
+    foreach ($absentCheck in $absentChecks) {
+        az resource show --ids $absentCheck.Id --output none 2>$null
+        if ($LASTEXITCODE -eq 0) {
+            Write-Info "  Not current: $($absentCheck.Description) still exists but its deployment flag is false."
+            return $false
+        }
+    }
+
+    if ($AutomationEnabled) {
+        $resourceChecks += @{ Id = "$coreScope/providers/Microsoft.ManagedIdentity/userAssignedIdentities/$AutomationManagedIdentityName"; Description = "Automation managed identity '$AutomationManagedIdentityName'" }
+        $resourceChecks += @{ Id = "$coreScope/providers/Microsoft.Automation/automationAccounts/$AutomationAccountName"; Description = "Automation Account '$AutomationAccountName'" }
+        foreach ($runbook in $AutomationRunbooks) {
+            $resourceChecks += @{ Id = "$coreScope/providers/Microsoft.Automation/automationAccounts/$AutomationAccountName/runbooks/$($runbook.name)"; Description = "Automation runbook '$($runbook.name)'" }
+        }
+        if ($VmStartScheduleEnabled) {
+            $resourceChecks += @{ Id = "$coreScope/providers/Microsoft.Automation/automationAccounts/$AutomationAccountName/schedules/$VmStartScheduleName"; Description = "Automation schedule '$VmStartScheduleName'" }
+        }
     }
 
     foreach ($resourceCheck in $resourceChecks) {
         if (-not (Test-AzureResourceCurrent -ResourceId $resourceCheck.Id -Description $resourceCheck.Description)) {
             return $false
+        }
+    }
+
+    if ($AutomationEnabled) {
+        foreach ($runbook in $AutomationRunbooks) {
+            $runbookId = "$coreScope/providers/Microsoft.Automation/automationAccounts/$AutomationAccountName/runbooks/$($runbook.name)"
+            $deployedHash = az resource show --ids $runbookId --query tags.sourceHash --output tsv 2>$null
+            $deployedHashValue = if ([string]::IsNullOrWhiteSpace($deployedHash)) { '' } else { $deployedHash.Trim() }
+            if ($LASTEXITCODE -ne 0 -or $deployedHashValue -ne $runbook.sourceHash) {
+                Write-Info "  Not current: Automation runbook '$($runbook.name)' source hash differs from the repository."
+                return $false
+            }
+        }
+
+        if ($VmStartScheduleEnabled) {
+            $jobSchedulesUri = "https://management.azure.com${coreScope}/providers/Microsoft.Automation/automationAccounts/$AutomationAccountName/jobSchedules?api-version=2024-10-23"
+            $jobSchedulesJson = az rest --method get --url $jobSchedulesUri --output json 2>$null
+            if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($jobSchedulesJson)) {
+                Write-Info '  Not current: unable to read Automation job schedules.'
+                return $false
+            }
+            $jobSchedules = ($jobSchedulesJson | ConvertFrom-Json).value
+            $matchingJob = @($jobSchedules | Where-Object {
+                $_.properties.runbook.name -eq 'start-vm' -and $_.properties.schedule.name -eq $VmStartScheduleName
+            })
+            if ($matchingJob.Count -eq 0) {
+                Write-Info "  Not current: runbook 'start-vm' is not linked to schedule '$VmStartScheduleName'."
+                return $false
+            }
         }
     }
 
@@ -936,6 +1361,7 @@ $VnetAddressSpace                = $config.vnetAddressSpace
 $ServicesSubnetAddressPrefix     = $config.servicesSubnetAddressPrefix
 $VmSubnetAddressPrefix           = $config.vmSubnetAddressPrefix
 $VmAcceleratedNetworking         = Convert-ToBoolean -Value $config.vmAcceleratedNetworking -Default $true
+$VmPublicIpDnsNameLabel          = [string]$config.vmPublicIpDnsNameLabel
 $CoreResourceGroupName           = $config.coreResourceGroupName
 $NetworkResourceGroupName        = $config.networkResourceGroupName
 $VnetName                        = $config.vnetName
@@ -954,7 +1380,9 @@ $SecondaryModelName              = $config.secondaryModelName
 $SecondaryModelVersion           = $config.secondaryModelVersion
 $SecondaryModelSkuName           = $config.secondaryModelSkuName
 $SecondaryCapacityK              = [int]$config.secondaryCapacityK
-$AdminObjectIds                  = ($config.adminObjectIds -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' })
+$AdminActors                  = @($config.adminActors)
+$UserActors                   = @($config.userActors)
+$AdminObjectIds               = @([string]$config.adminObjectIds -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' })
 $VmAdminUsername                 = $config.vmAdminUsername
 $VmSize                          = $config.vmSize
 $VmImagePublisher                = $config.vmImagePublisher
@@ -968,6 +1396,18 @@ $VmSpotMaxPrice                  = [int]$config.vmSpotMaxPrice
 $VmAutoShutdownEnabled           = Convert-ToBoolean -Value $config.vmAutoShutdownEnabled -Default $true
 $VmAutoShutdownTime              = $config.vmAutoShutdownTime
 $VmAutoShutdownTimeZone          = $config.vmAutoShutdownTimeZone
+$VmGuestTimeZone                 = $config.vmGuestTimeZone
+$AutomationEnabled               = Convert-ToBoolean -Value $config.deployAutomation -Default $true
+$DeployStorage                   = Convert-ToBoolean -Value $config.deployStorage -Default $true
+$DeployLogAnalytics              = Convert-ToBoolean -Value $config.deployLogAnalytics -Default $true
+$DeployAiFoundry                 = Convert-ToBoolean -Value $config.deployAiFoundry -Default $true
+$DeployVm                        = Convert-ToBoolean -Value $config.deployVm -Default $true
+$DeployAutomation                = $AutomationEnabled
+$AutomationRuntimeVersion        = $config.automationRuntimeVersion
+$AutomationAzVersion             = $config.automationAzVersion
+$VmStartScheduleEnabled          = Convert-ToBoolean -Value $config.vmStartScheduleEnabled -Default $true
+$VmStartScheduleTime             = $config.vmStartScheduleTime
+$VmStartScheduleTimeZone         = $config.vmStartScheduleTimeZone
 $PrivateAiWorkspacesOnly         = Convert-ToBoolean -Value $config.privateAiWorkspacesOnly -Default $true
 $EnableAuditDiagnostics          = Convert-ToBoolean -Value $config.enableAuditDiagnostics -Default $true
 $LogAnalyticsRetentionDays       = [int]$config.logAnalyticsRetentionDays
@@ -991,13 +1431,32 @@ $openAiAccountName   = $config.openAiAccountName
 $vmName              = $config.vmName
 $hubManagedIdentityName = $config.hubManagedIdentityName
 $vmManagedIdentityName = $config.vmManagedIdentityName
+$automationManagedIdentityName = $config.automationManagedIdentityName
+$automationAccountName = $config.automationAccountName
+$vmStartScheduleName = $config.vmStartScheduleName
 $legacyManagedIdentityName = $config.legacyManagedIdentityName
+$automationRunbooks = if ($AutomationEnabled) {
+    @(Get-AutomationRunbookDescriptors -ScriptRoot $scriptRoot)
+} else {
+    @()
+}
+$vmStartScheduleStartTime = if ($AutomationEnabled -and $VmStartScheduleEnabled) {
+    Get-AutomationScheduleStartTime `
+        -SubscriptionId $subscriptionId `
+        -ResourceGroupName $CoreResourceGroupName `
+        -AutomationAccountName $automationAccountName `
+        -ScheduleName $vmStartScheduleName `
+        -Time $VmStartScheduleTime `
+        -TimeZone $VmStartScheduleTimeZone
+} else {
+    ''
+}
 
 $tenantIdRaw = az account show --query tenantId --output tsv 2>$null
 $tenantId = if (-not [string]::IsNullOrWhiteSpace($tenantIdRaw)) { $tenantIdRaw.Trim() } else { '' }
 Write-Info "  TenantId (for first-run device login): $tenantId"
 
-$adminUpn = $AdminObjectIds[0]
+$adminUpn = if ($AdminObjectIds.Count -gt 0) { $AdminObjectIds[0] } else { '' }
 
 if ($Action -eq 'myip') {
     Write-Error "The 'myip' action is unavailable because subscription policy requires Key Vault and Storage public network access to remain disabled. Use the VM inside the VNet for data-plane access."
@@ -1016,6 +1475,16 @@ if (-not $WhatIf -and -not $ForceRedeploy -and -not $ForceAppBootstrap) {
         -ProjectName $projectName `
         -HubManagedIdentityName $hubManagedIdentityName `
         -VmManagedIdentityName $vmManagedIdentityName `
+        -AutomationEnabled $AutomationEnabled `
+        -DeployStorage $DeployStorage `
+        -DeployLogAnalytics $DeployLogAnalytics `
+        -DeployAiFoundry $DeployAiFoundry `
+        -DeployVm $DeployVm `
+        -AutomationAccountName $automationAccountName `
+        -AutomationManagedIdentityName $automationManagedIdentityName `
+        -AutomationRunbooks $automationRunbooks `
+        -VmStartScheduleEnabled $VmStartScheduleEnabled `
+        -VmStartScheduleName $vmStartScheduleName `
         -VnetName $VnetName `
         -VmName $vmName `
         -LogAnalyticsWorkspaceName $LogAnalyticsWorkspaceName `
@@ -1037,7 +1506,7 @@ if (-not $WhatIf -and -not $ForceRedeploy -and -not $ForceAppBootstrap) {
 
 Register-RequiredResourceProviders -SubscriptionId $subscriptionId
 
-Write-Task 'Verifying deploying identity has role-assignment write permission...'
+Write-Task 'Resolving the deploying identity...'
 $accountTypeRaw = az account show --query 'user.type' --output tsv 2>$null
 $accountType = if (-not [string]::IsNullOrWhiteSpace($accountTypeRaw)) { $accountTypeRaw.Trim() } else { '' }
 if ($accountType -eq 'servicePrincipal') {
@@ -1049,8 +1518,10 @@ if ($accountType -eq 'servicePrincipal') {
     $signedInUserIdRaw = az ad signed-in-user show --query id --output tsv 2>$null
     $deployingObjectId = if ($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace($signedInUserIdRaw)) {
         $signedInUserIdRaw.Trim()
-    } else {
+    } elseif ($AdminObjectIds.Count -gt 0) {
         $AdminObjectIds[0]
+    } else {
+        ''
     }
 }
 
@@ -1059,23 +1530,33 @@ if ([string]::IsNullOrWhiteSpace($deployingObjectId)) {
     exit 1
 }
 Write-Info "  Deploying identity object ID: $deployingObjectId  (type: $accountType)"
+$deployingPrincipalType = if ($accountType -eq 'servicePrincipal') { 'ServicePrincipal' } else { 'User' }
 
 $subScope = "/subscriptions/$subscriptionId"
-$privilegedRoles = az role assignment list `
-    --assignee $deployingObjectId `
-    --scope $subScope `
-    --query "[?roleDefinitionName=='Owner' || roleDefinitionName=='User Access Administrator'].roleDefinitionName" `
-    --output tsv 2>$null
-$hasRoleAssignWrite = ($LASTEXITCODE -eq 0) -and (-not [string]::IsNullOrWhiteSpace($privilegedRoles))
+$skipRoleElevation = [bool]($isCi -or $SkipRoleElevation)
+if ($skipRoleElevation) {
+    Write-Info '  Automatic role elevation is disabled for this run (CI context or -SkipRoleElevation).'
+}
+$hasRoleAssignWrite = Initialize-RoleAssignmentWritePermission `
+    -PrincipalObjectId $deployingObjectId `
+    -PrincipalType $deployingPrincipalType `
+    -SubscriptionId $subscriptionId `
+    -SkipElevation $skipRoleElevation
 
 if (-not $hasRoleAssignWrite) {
     Write-Error @"
 The deploying identity ($deployingObjectId, type: $accountType) does not have 'Owner' or
-'User Access Administrator' role at subscription scope '$subScope'.
+'User Access Administrator' role at subscription scope '$subScope', and this script could not
+grant it automatically.
 
 This role is required because the Bicep template creates Azure RBAC role assignments
-for the managed identity (Storage Blob Data Contributor, Key Vault Secrets User,
+for the managed identities (Storage Blob Data Contributor, Key Vault Secrets User,
 Cognitive Services OpenAI User).
+
+Automatic remediation attempts that were made:
+  1. Self-assigning 'User Access Administrator' at the subscription scope.
+  2. Entra 'Access management for Azure resources' elevation (interactive users only;
+     requires the Entra Global Administrator role).
 
 One-time fix — have an administrator with role-assignment write permission at this
 subscription scope run this single-line command (compatible with PowerShell):
@@ -1085,10 +1566,11 @@ The deploying identity also needs resource deployment permissions, such as Contr
 The Entra Global Administrator role alone does not grant Azure subscription access.
 In the portal, select the actual deploying user or service principal:
   Subscription -> Access control (IAM) -> Add role assignment -> User Access Administrator.
+
+CI note: pipeline service principals cannot self-elevate. Grant the role once, out of band.
 "@
     exit 1
 }
-Write-Exists "  Identity has '$($privilegedRoles.Trim())' at subscription scope — role-assignment write confirmed."
 
 $createdDateFromRg = az group show --name $CoreResourceGroupName --query "tags.createdDate" --output tsv 2>$null
 if ($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace($createdDateFromRg)) {
@@ -1122,19 +1604,62 @@ $localPublicIpCidr = "$localPublicIp/32"
 $rdpAllowedIpCidrs = @($localPublicIpCidr)
 Write-Info "  Public IP detected: $localPublicIp"
 
-if ([string]::IsNullOrWhiteSpace($VmAdminPassword)) {
-    if ($isCi) {
-        Write-Error 'VM_ADMIN_PASSWORD was not supplied. CI deployments must pass -VmAdminPassword from a protected secret.'
-        exit 1
-    }
+# ----------------------------------------------------------------
+# VM admin password resolution.
+#
+# Reruns must never silently change a password the jumpbox already has.
+# Resolution order:
+#   1. -VmAdminPassword            -> use it, store it, apply it.
+#   2. -RotateVmPassword           -> generate a new one deliberately.
+#   3. VM absent or being recreated-> generate one (there is no password to keep).
+#   4. Local credential file       -> reuse the exact value from the last run.
+#   5. Otherwise                   -> preserve: the VM keeps its current password.
+#                                     Nothing is applied, synced, or written.
+# ----------------------------------------------------------------
+$repositoryRoot = (Resolve-Path (Join-Path $scriptRoot '..')).Path
+$credentialDirectory = Join-Path $repositoryRoot '.local\credentials'
+$credentialFile = Join-Path $credentialDirectory "vm-$EnvironmentSuffix.credentials.txt"
+$preserveExistingVmPassword = $false
+$vmPasswordOrigin = 'supplied'
 
-    $existingVmId = az vm show --resource-group $CoreResourceGroupName --name $vmName --query id --output tsv 2>$null
-    $existingVmFound = $LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace($existingVmId)
-    $VmAdminPassword = New-SecurePassword
-    if ($existingVmFound) {
-        Write-Info "  VM '$vmName' exists. Generated a new password that will be applied and stored through the private-vault-compatible deployment path."
+if ([string]::IsNullOrWhiteSpace($VmAdminPassword)) {
+    $vmWillBeCreatedOrRecreated = -not (Test-ExistingVmRetainsPassword `
+        -ResourceGroupName $CoreResourceGroupName `
+        -VmName $vmName `
+        -UseSpot $VmUseSpot `
+        -VmDeploymentEnabled $DeployVm)
+
+    if (-not $DeployVm) {
+        $preserveExistingVmPassword = $true
+        $vmPasswordOrigin = 'notApplicable'
+        $VmAdminPassword = New-SecurePassword
+        Write-Info '  VM deployment is disabled — no VM password is generated, applied, or stored.'
+    } elseif ($RotateVmPassword -or $vmWillBeCreatedOrRecreated) {
+        if ($isCi) {
+            Write-Error 'VM_ADMIN_PASSWORD was not supplied. CI deployments must pass -VmAdminPassword from a protected secret.'
+            exit 1
+        }
+        $VmAdminPassword = New-SecurePassword
+        $vmPasswordOrigin = 'generated'
+        if ($RotateVmPassword) {
+            Write-Needed "  -RotateVmPassword supplied — generating a new password for VM '$vmName'."
+        } else {
+            Write-Exists 'Generated a new VM admin password because the VM is being created.'
+        }
     } else {
-        Write-Exists 'Generated a new VM admin password for first-time deployment.'
+        $storedVmPassword = Get-StoredVmCredentialPassword -CredentialFilePath $credentialFile
+        if (-not [string]::IsNullOrWhiteSpace($storedVmPassword)) {
+            $VmAdminPassword = $storedVmPassword
+            $vmPasswordOrigin = 'reused'
+            Write-Exists "  Reusing the existing VM password recorded for '$vmName' — it is not being changed."
+        } else {
+            $preserveExistingVmPassword = $true
+            $vmPasswordOrigin = 'preserved'
+            # ARM ignores osProfile.adminPassword for an existing VM, so this throwaway value
+            # satisfies the required template parameter without ever reaching the guest OS.
+            $VmAdminPassword = New-SecurePassword
+            Write-Exists "  VM '$vmName' already has a password from a previous run — keeping it unchanged."
+        }
     }
 }
 
@@ -1154,11 +1679,24 @@ $deploymentParameters = @{
         servicesSubnetAddressPrefix = @{ value = $ServicesSubnetAddressPrefix }
         vmSubnetAddressPrefix = @{ value = $VmSubnetAddressPrefix }
         vmAcceleratedNetworking = @{ value = $VmAcceleratedNetworking }
+        vmPublicIpDnsNameLabel = @{ value = $VmPublicIpDnsNameLabel }
         skuName = @{ value = $SkuName }
         storageAccessTier = @{ value = $StorageAccessTier }
         storageBlobSoftDeleteRetentionDays = @{ value = $StorageBlobSoftDeleteDays }
         storageContainerSoftDeleteRetentionDays = @{ value = $StorageContainerSoftDeleteDays }
         keyVaultSoftDeleteRetentionDays = @{ value = $KeyVaultSoftDeleteDays }
+        adminActors = @{ value = @($AdminActors | ForEach-Object {
+            @{
+                objectId = $_.objectId
+                principalType = $_.principalType
+            }
+        }) }
+        userActors = @{ value = @($UserActors | ForEach-Object {
+            @{
+                objectId = $_.objectId
+                principalType = $_.principalType
+            }
+        }) }
         adminObjectIds = @{ value = @($AdminObjectIds) }
         modelDeploymentName = @{ value = $ModelDeploymentName }
         modelName = @{ value = $ModelName }
@@ -1184,6 +1722,22 @@ $deploymentParameters = @{
         vmAutoShutdownEnabled = @{ value = $VmAutoShutdownEnabled }
         vmAutoShutdownTime = @{ value = $VmAutoShutdownTime }
         vmAutoShutdownTimeZone = @{ value = $VmAutoShutdownTimeZone }
+        deployStorage = @{ value = $DeployStorage }
+        deployLogAnalytics = @{ value = $DeployLogAnalytics }
+        deployAiFoundry = @{ value = $DeployAiFoundry }
+        deployVm = @{ value = $DeployVm }
+        deployAutomation = @{ value = $DeployAutomation }
+        automationRuntimeVersion = @{ value = $AutomationRuntimeVersion }
+        automationAzVersion = @{ value = $AutomationAzVersion }
+        automationRunbooks = @{ value = @($automationRunbooks | ForEach-Object {
+            @{
+                name = $_.name
+                sourceHash = $_.sourceHash
+            }
+        }) }
+        vmStartScheduleEnabled = @{ value = $VmStartScheduleEnabled }
+        vmStartScheduleStartTime = @{ value = $vmStartScheduleStartTime }
+        vmStartScheduleTimeZone = @{ value = $VmStartScheduleTimeZone }
         privateAiWorkspacesOnly = @{ value = $PrivateAiWorkspacesOnly }
         logAnalyticsRetentionDays = @{ value = $LogAnalyticsRetentionDays }
         rdpAllowedIpCidrs = @{ value = $rdpAllowedIpCidrs }
@@ -1436,6 +1990,103 @@ if ($vmExists) {
     Write-Exists "  VM '$vmName' does not exist yet — fresh deploy."
 }
 
+# ----------------------------------------------------------------
+# Deployment-flag removal
+# ----------------------------------------------------------------
+# Each variables/<env>.yaml deploy* flag is authoritative: true deploys and keeps the component
+# current, false removes it if a previous run created it. Only optional components have a flag.
+# The following are deliberately NOT removable because they hold deployment state or every other
+# component depends on them: resource groups, the virtual network and subnets, private DNS zones
+# and VNet links, Key Vault and its private endpoint (holds all deployment secrets), Azure OpenAI
+# and its private endpoint (holds the model deployments), and the hub/VM managed identities.
+Write-Task 'Applying component deployment flags (removing disabled components)...'
+
+$removeResourceById = {
+    param([string]$ResourceId, [string]$Description)
+
+    az resource show --ids $ResourceId --output none 2>$null
+    if ($LASTEXITCODE -ne 0) {
+        return $false
+    }
+
+    Write-Needed "  Removing $Description (deployment flag is false)..."
+    az resource delete --ids $ResourceId --output none 2>$null
+    if ($LASTEXITCODE -eq 0) {
+        Write-Exists "  Removed $Description."
+    } else {
+        Write-Info "  Warning: could not remove $Description. Remove it manually and rerun."
+    }
+    return $true
+}
+
+$coreScopeId = "/subscriptions/$subscriptionId/resourceGroups/$CoreResourceGroupName"
+$networkScopeId = "/subscriptions/$subscriptionId/resourceGroups/$NetworkResourceGroupName"
+
+if (-not $DeployAutomation) {
+    # Runbooks, schedules, and job schedules are children of the Automation Account and are
+    # removed with it. The automation identity exists only to run those runbooks.
+    & $removeResourceById "$coreScopeId/providers/Microsoft.Automation/automationAccounts/$automationAccountName" "Automation Account '$automationAccountName'" | Out-Null
+    & $removeResourceById "$coreScopeId/providers/Microsoft.ManagedIdentity/userAssignedIdentities/$automationManagedIdentityName" "Automation managed identity '$automationManagedIdentityName'" | Out-Null
+}
+
+if (-not $DeployVm) {
+    # Order matters: the schedule and VM must go before the NIC, and the NIC before the public IP
+    # and NSG. The OS disk survives 'az vm delete', so it is removed explicitly.
+    & $removeResourceById "$coreScopeId/providers/Microsoft.DevTestLab/schedules/shutdown-computevm-$vmName" "VM auto-shutdown schedule for '$vmName'" | Out-Null
+    & $removeResourceById "$coreScopeId/providers/Microsoft.Compute/virtualMachines/$vmName" "jumpbox VM '$vmName'" | Out-Null
+    & $removeResourceById "$coreScopeId/providers/Microsoft.Compute/disks/$vmName-osdisk" "VM OS disk '$vmName-osdisk'" | Out-Null
+    & $removeResourceById "$networkScopeId/providers/Microsoft.Network/networkInterfaces/$vmName-nic" "VM NIC '$vmName-nic'" | Out-Null
+    & $removeResourceById "$networkScopeId/providers/Microsoft.Network/publicIPAddresses/$vmName-pip" "VM public IP '$vmName-pip'" | Out-Null
+    & $removeResourceById "$networkScopeId/providers/Microsoft.Network/networkSecurityGroups/$vmName-nsg" "VM NSG '$vmName-nsg'" | Out-Null
+}
+
+if (-not $DeployAiFoundry) {
+    # The project is a child workspace of the hub, so it must be deleted first.
+    foreach ($workspaceToRemove in @($projectName, $hubName)) {
+        $workspaceUri = "https://management.azure.com$coreScopeId/providers/Microsoft.MachineLearningServices/workspaces/$workspaceToRemove`?api-version=$MlApiVersion&forcePurge=true"
+        try {
+            Invoke-RestMethod -Method DELETE -Uri $workspaceUri -Headers $armHeaders -ErrorAction Stop | Out-Null
+            Write-Exists "  Removed AI workspace '$workspaceToRemove' (deployment flag is false)."
+        } catch {
+            $removeStatusCode = $null
+            if ($_.Exception.Response) { $removeStatusCode = [int]$_.Exception.Response.StatusCode }
+            if ($removeStatusCode -ne 404) {
+                Write-Info "  Warning: could not remove AI workspace '$workspaceToRemove': $($_.Exception.Message)"
+            }
+        }
+    }
+    & $removeResourceById "$networkScopeId/providers/Microsoft.Network/privateEndpoints/$hubName-pe" "AI Hub private endpoint '$hubName-pe'" | Out-Null
+}
+
+if (-not $DeployStorage) {
+    # The private endpoint references the storage account, so it must be removed first.
+    & $removeResourceById "$networkScopeId/providers/Microsoft.Network/privateEndpoints/$storageAccountName-blob-pe" "Storage private endpoint '$storageAccountName-blob-pe'" | Out-Null
+    & $removeResourceById "$coreScopeId/providers/Microsoft.Storage/storageAccounts/$storageAccountName" "Storage account '$storageAccountName'" | Out-Null
+}
+
+if (-not $DeployLogAnalytics) {
+    # Diagnostic settings pointing at the workspace must be removed before the workspace itself.
+    $diagnosticTargetIds = @(
+        "$coreScopeId/providers/Microsoft.CognitiveServices/accounts/$openAiAccountName"
+        "$coreScopeId/providers/Microsoft.KeyVault/vaults/$keyVaultName"
+        "$coreScopeId/providers/Microsoft.Storage/storageAccounts/$storageAccountName"
+        "$coreScopeId/providers/Microsoft.MachineLearningServices/workspaces/$hubName"
+    )
+    foreach ($diagnosticTargetId in $diagnosticTargetIds) {
+        $diagnosticListJson = az monitor diagnostic-settings list --resource $diagnosticTargetId --output json 2>$null
+        if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($diagnosticListJson)) {
+            continue
+        }
+        $diagnosticSettings = @(($diagnosticListJson | ConvertFrom-Json).value)
+        foreach ($diagnosticSetting in $diagnosticSettings) {
+            if ([string]::IsNullOrWhiteSpace($diagnosticSetting.name)) { continue }
+            Write-Needed "  Removing diagnostic setting '$($diagnosticSetting.name)' (deployLogAnalytics is false)..."
+            az monitor diagnostic-settings delete --resource $diagnosticTargetId --name $diagnosticSetting.name --output none 2>$null
+        }
+    }
+    & $removeResourceById "$coreScopeId/providers/Microsoft.OperationalInsights/workspaces/$LogAnalyticsWorkspaceName" "Log Analytics workspace '$LogAnalyticsWorkspaceName'" | Out-Null
+}
+
 $identityNamesForRoleCleanup = @($hubManagedIdentityName, $vmManagedIdentityName, $legacyManagedIdentityName)
 $miRoleGuids = @(
     'ba92f5b4-2d11-453d-a403-e96b0029c9fe'
@@ -1473,6 +2124,72 @@ foreach ($identityNameForRoleCleanup in $identityNamesForRoleCleanup) {
             }
         }
     }
+    }
+
+    # Actor role assignments are owned solely by actorroles.bicep / networkroles.bicep. Earlier
+    # revisions created some of the same role/principal/scope pairs from other modules with a
+    # different deterministic name, which makes ARM fail with RoleAssignmentExists. Remove any
+    # existing assignment for a managed role at (or below) the environment resource groups so the
+    # deployment can recreate it under the name the templates own.
+    $actorRoleGuids = @(
+        '00482a5a-887f-4fb3-b363-3b7fe8e74483'  # Key Vault Administrator
+        'a001fd3d-188f-4b5d-821b-7da978bf7442'  # Cognitive Services OpenAI Contributor
+        '25fbc0a9-bd7c-42a3-aa1a-3b75d497ee68'  # Cognitive Services Contributor
+        'b7e6dc6d-f1e8-4753-8033-0f276bb0955b'  # Storage Blob Data Owner
+        '17d1049b-9a84-46fb-8f53-869881c3d3ab'  # Storage Account Contributor
+        'b78c5d69-af96-48a3-bf8d-a8b4d589de94'  # Azure AI Administrator
+        '1c0163c0-47e6-4577-8991-ea5c82e286e4'  # Virtual Machine Administrator Login
+        '92aaf0da-9dab-42b6-94a3-d43ce8d16293'  # Log Analytics Contributor
+        '749f88d5-cbae-40b8-bcfc-e573ddc772fa'  # Monitoring Contributor
+        '4633458b-17de-408a-b874-0445c86b69e6'  # Key Vault Secrets User
+        'b86a8fe4-44ce-4948-aee5-eccb2c155cd7'  # Key Vault Secrets Officer
+        '21090545-7ca7-4776-b22c-e363652d74d2'  # Key Vault Reader
+        '5e0bd9bd-7b93-4f28-af87-19fc36ad61bd'  # Cognitive Services OpenAI User
+        'a97b65f3-24c7-4388-baec-2e87135dc908'  # Cognitive Services User
+        'ba92f5b4-2d11-453d-a403-e96b0029c9fe'  # Storage Blob Data Contributor
+        '64702f94-c441-49e6-a78b-ef80e0188fee'  # Azure AI Developer
+        'f6c7c914-8db3-469d-8ca1-694a8f32e121'  # AzureML Data Scientist
+        'fb879df8-f326-4884-b1cf-06f3ad86be52'  # Virtual Machine User Login
+        '73c42c96-874c-492b-b04d-ab87d138a893'  # Log Analytics Reader
+        '43d0d8ad-25c7-4714-9337-8ba259a9fe05'  # Monitoring Reader
+        'b24988ac-6180-42a0-ab88-20f7382dd24c'  # Contributor
+        '18d7d88d-d35e-4fb5-a5c3-7773c20a72d9'  # User Access Administrator
+        'acdd72a7-3385-48ef-bd42-f606fba81ae7'  # Reader
+    )
+    $managedScopePrefixes = @($coreScopeId.ToLowerInvariant(), $networkScopeId.ToLowerInvariant())
+    $actorPrincipalIds = @(@($AdminActors + $UserActors) |
+        ForEach-Object { [string]$_.objectId } |
+        Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
+        Select-Object -Unique)
+
+    foreach ($actorPrincipalId in $actorPrincipalIds) {
+        $actorAssignmentsJson = az role assignment list `
+            --all `
+            --assignee $actorPrincipalId `
+            --query '[].{id:id, scope:scope, role:roleDefinitionId}' `
+            --output json 2>$null
+        if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($actorAssignmentsJson)) {
+            continue
+        }
+
+        $staleActorAssignments = @(@($actorAssignmentsJson | ConvertFrom-Json) | Where-Object {
+            $assignmentScope = ([string]$_.scope).ToLowerInvariant()
+            $assignmentRoleGuid = ([string]$_.role -split '/')[-1]
+            ($managedScopePrefixes | Where-Object { $assignmentScope.StartsWith($_) }) -and
+            ($actorRoleGuids -contains $assignmentRoleGuid)
+        })
+
+        if ($staleActorAssignments.Count -eq 0) {
+            continue
+        }
+
+        Write-Task "Removing stale role assignments for actor '$actorPrincipalId' before deployment..."
+        foreach ($staleActorAssignment in $staleActorAssignments) {
+            az role assignment delete --ids $staleActorAssignment.id --output none
+            if ($LASTEXITCODE -eq 0) {
+                Write-Exists "  Removed role '$((([string]$staleActorAssignment.role) -split '/')[-1])' at '$($staleActorAssignment.scope)'."
+            }
+        }
     }
 } else {
     Write-Info 'Preview mode: skipping resource-group creation and destructive stale-resource cleanup.'
@@ -1514,7 +2231,7 @@ if ($LASTEXITCODE -ne 0) {
 
 if ($WhatIf) {
     Remove-Item $parameterFile -Force -ErrorAction SilentlyContinue
-    Write-Exists 'What-if completed. Skipping secret sync and app packaging.'
+    Write-Exists 'What-if completed. Skipping runbook publication, secret sync, and app packaging.'
     exit 0
 }
 Write-Info "[Bicep] completed in $($phaseWatch.Elapsed.ToString('mm\:ss'))"
@@ -1526,6 +2243,53 @@ $deploymentOutputs = Get-SubscriptionDeploymentOutputs `
     -DeploymentName $deploymentName
 if ($null -eq $deploymentOutputs) {
     Write-Info 'Warning: could not read deployment outputs. Falling back to derived defaults.'
+}
+
+if ($AutomationEnabled) {
+    $automationIdentityClientId = (Get-DeploymentOutputValue -Outputs $deploymentOutputs -Name 'automationManagedIdentityClientId').Trim()
+    if ([string]::IsNullOrWhiteSpace($automationIdentityClientId)) {
+        $automationIdentityClientIdRaw = az identity show `
+            --resource-group $CoreResourceGroupName `
+            --name $automationManagedIdentityName `
+            --query clientId `
+            --output tsv 2>$null
+        $automationIdentityClientId = if ($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace($automationIdentityClientIdRaw)) {
+            $automationIdentityClientIdRaw.Trim()
+        } else {
+            ''
+        }
+    }
+    if ([string]::IsNullOrWhiteSpace($automationIdentityClientId)) {
+        throw "Could not resolve the client ID for Automation identity '$automationManagedIdentityName'."
+    }
+
+    Publish-AutomationRunbooks `
+        -SubscriptionId $subscriptionId `
+        -ResourceGroupName $CoreResourceGroupName `
+        -AutomationAccountName $automationAccountName `
+        -Runbooks $automationRunbooks
+
+    if ($VmStartScheduleEnabled) {
+        $automationJobScheduleName = (Get-DeploymentOutputValue -Outputs $deploymentOutputs -Name 'automationJobScheduleName').Trim()
+        if ([string]::IsNullOrWhiteSpace($automationJobScheduleName)) {
+            throw 'The deployment did not return the deterministic Automation job schedule name.'
+        }
+        Set-AutomationJobSchedule `
+            -SubscriptionId $subscriptionId `
+            -ResourceGroupName $CoreResourceGroupName `
+            -AutomationAccountName $automationAccountName `
+            -JobScheduleName $automationJobScheduleName `
+            -ScheduleName $vmStartScheduleName `
+            -RunbookName 'start-vm' `
+            -RunbookParameters @{
+                automationIdentityClientId = $automationIdentityClientId
+                resourceGroupName = $CoreResourceGroupName
+                subscriptionId = $subscriptionId
+                vmName = $vmName
+            }
+    }
+    Write-Info "[Automation runbooks] completed in $($phaseWatch.Elapsed.ToString('mm\:ss'))"
+    $phaseWatch.Restart()
 }
 
 $legacyIdentityId = az identity show `
@@ -1596,14 +2360,14 @@ if ([string]::IsNullOrWhiteSpace($logAnalyticsWorkspaceId)) {
 }
 
 try {
-    if (-not [string]::IsNullOrWhiteSpace($logAnalyticsWorkspaceName)) {
+    if ($DeployLogAnalytics -and -not [string]::IsNullOrWhiteSpace($logAnalyticsWorkspaceName)) {
         Set-LogAnalyticsDailyQuota `
             -ResourceGroupName $CoreResourceGroupName `
             -WorkspaceName $logAnalyticsWorkspaceName `
             -DailyQuotaGb $LogAnalyticsDailyQuotaGb
     }
 
-    if ($EnableAuditDiagnostics -and -not [string]::IsNullOrWhiteSpace($logAnalyticsWorkspaceId)) {
+    if ($DeployLogAnalytics -and $EnableAuditDiagnostics -and -not [string]::IsNullOrWhiteSpace($logAnalyticsWorkspaceId)) {
         Set-AuditDiagnosticsForImportantResources `
             -CoreResourceGroupName $CoreResourceGroupName `
             -NetworkResourceGroupName $NetworkResourceGroupName `
@@ -1625,7 +2389,9 @@ if (-not (Sync-KeyVaultSecretValue -VaultResourceId $keyVaultResourceId -SecretN
 if (-not (Sync-KeyVaultSecretValue -VaultResourceId $keyVaultResourceId -SecretName 'openai-secondary-deployment' -SecretValue $openAiSecondaryDeployment)) {
     $secretSyncFailures += 'openai-secondary-deployment'
 }
-if (-not [string]::IsNullOrWhiteSpace($VmAdminPassword)) {
+if ($preserveExistingVmPassword) {
+    Write-Info "  Skipping vm-admin-password sync because the existing VM password is being preserved."
+} elseif (-not [string]::IsNullOrWhiteSpace($VmAdminPassword)) {
     if (-not (Sync-KeyVaultSecretValue -VaultResourceId $keyVaultResourceId -SecretName 'vm-admin-password' -SecretValue $VmAdminPassword)) {
         $secretSyncFailures += 'vm-admin-password'
     }
@@ -1666,6 +2432,8 @@ Write-Info "[Secrets sync] completed in $($phaseWatch.Elapsed.ToString('mm\:ss')
 $phaseWatch.Restart()
 $firstRunFile = Join-Path $tempDir "first-run-$EnvironmentSuffix.$PID.ps1"
 
+$firstAdminObjectId = if ($AdminObjectIds.Count -gt 0) { $AdminObjectIds[0] } else { '' }
+
 # Values are substituted directly into the script at deploy time so the VM
 # does not need any parameters — it is self-contained.
 $firstRunContent = @"
@@ -1674,7 +2442,7 @@ $firstRunContent = @"
 `$KeyVaultName  = '$keyVaultName'
 `$KeyVaultUrl   = '$keyVaultUrl'
 `$MiClientId    = '$managedIdentityClientId'
-`$AdminObjectId = '$($AdminObjectIds[0])'
+`$AdminObjectId = '$firstAdminObjectId'
 `$AdminUpn      = '$adminUpn'
 `$TenantId      = '$tenantId'
 `$AppDir        = 'C:\ChatApp'
@@ -1841,7 +2609,10 @@ $contentIsCurrent = Test-KeyVaultSecretValueCurrent `
     -SecretName 'chatapp-content-hash' `
     -SecretValue $localContentHash
 
-if ($contentIsCurrent -and -not $ForceAppBootstrap) {
+if (-not $DeployVm) {
+    Write-Info 'VM deployment is disabled (deployVm: false) — skipping application bootstrap.'
+    Remove-Item $firstRunFile -Force -ErrorAction SilentlyContinue
+} elseif ($contentIsCurrent -and -not $ForceAppBootstrap) {
     Write-Exists 'App files unchanged since last deploy — skipping VM bootstrap.'
     Remove-Item $firstRunFile -Force -ErrorAction SilentlyContinue
 } else {
@@ -1866,7 +2637,8 @@ if ($contentIsCurrent -and -not $ForceAppBootstrap) {
     $bootstrapSucceeded = Invoke-VmBootstrapPackage `
         -ResourceGroupName $CoreResourceGroupName `
         -VmName $vmName `
-        -FilePaths $bootstrapFiles
+        -FilePaths $bootstrapFiles `
+        -GuestTimeZone $VmGuestTimeZone
     Remove-Item $firstRunFile -Force -ErrorAction SilentlyContinue
 
     if (-not $bootstrapSucceeded) {
@@ -1885,44 +2657,61 @@ Write-Task 'Applying the deployment VM admin password...'
 Write-Info "[VM application bootstrap] completed in $($phaseWatch.Elapsed.ToString('mm\:ss'))"
 $phaseWatch.Restart()
 
-if ([string]::IsNullOrWhiteSpace($VmAdminPassword)) {
-    Write-Error '  The deployment VM password is empty.'
-    exit 1
-}
-$kvVmPassword = $VmAdminPassword
+# A rerun must never silently change a password the VM already has.
+$skipVmPasswordApply = $preserveExistingVmPassword -or (-not $DeployVm)
 
-$vmReady = Ensure-VmRunning `
-    -ResourceGroupName $CoreResourceGroupName `
-    -VmName $vmName
-
-if (-not $vmReady) {
-    Write-Error '  Unable to guarantee the VM is running; cannot reset the password.'
-    exit 1
-}
-
-Write-Info '  Applying the same password supplied to the VM deployment and stored in Key Vault.'
-$resetSucceeded = Update-VmUserPassword `
-    -ResourceGroupName $CoreResourceGroupName `
-    -VmName $vmName `
-    -Username $VmAdminUsername `
-    -Password $kvVmPassword
-
-if ($resetSucceeded) {
-    Write-Exists "  VM password applied for user '$VmAdminUsername'."
+if ($skipVmPasswordApply) {
+    if ($DeployVm) {
+        Write-Exists "  VM '$vmName' keeps the password assigned by a previous run — nothing was changed."
+        Write-Info '  Use -RotateVmPassword to deliberately issue a new password.'
+    } else {
+        Write-Info '  VM deployment is disabled — skipping VM password handling.'
+    }
 } else {
-    Write-Error "  Failed to reset VM password after multiple attempts."
-    exit 1
+    if ([string]::IsNullOrWhiteSpace($VmAdminPassword)) {
+        Write-Error '  The deployment VM password is empty.'
+        exit 1
+    }
+
+    $vmReady = Ensure-VmRunning `
+        -ResourceGroupName $CoreResourceGroupName `
+        -VmName $vmName
+
+    if (-not $vmReady) {
+        Write-Error '  Unable to guarantee the VM is running; cannot reset the password.'
+        exit 1
+    }
+
+    Write-Info '  Applying the same password supplied to the VM deployment and stored in Key Vault.'
+    $resetSucceeded = Update-VmUserPassword `
+        -ResourceGroupName $CoreResourceGroupName `
+        -VmName $vmName `
+        -Username $VmAdminUsername `
+        -Password $VmAdminPassword
+
+    if ($resetSucceeded) {
+        Write-Exists "  VM password applied for user '$VmAdminUsername'."
+    } else {
+        Write-Error "  Failed to reset VM password after multiple attempts."
+        exit 1
+    }
 }
 
 Write-Info "[VM password reset] completed in $($phaseWatch.Elapsed.ToString('mm\:ss'))"
 
-if ($isCi) {
+if (-not $DeployVm) {
+    Write-Info 'VM deployment is disabled — no VM credentials to report.'
+} elseif ($preserveExistingVmPassword) {
+    Write-Info ''
+    Write-Needed 'VM LOGIN CREDENTIALS'
+    Write-Info "  VM / host : $vmName ($vmPublicIpAddress)"
+    Write-Info "  Username  : $VmAdminUsername"
+    Write-Info '  Password  : unchanged from the previous run; this run neither read nor stored it.'
+    Write-Needed 'Retrieve it from your password manager, or rerun with -RotateVmPassword to issue a new one.'
+} elseif ($isCi) {
     Write-Info 'VM credentials are not printed or written to a workspace file in CI.'
     Write-Info 'Supply -VmAdminPassword from the CI secret store and retrieve it from that store when needed.'
 } else {
-    $repositoryRoot = (Resolve-Path (Join-Path $scriptRoot '..')).Path
-    $credentialDirectory = Join-Path $repositoryRoot '.local\credentials'
-    $credentialFile = Join-Path $credentialDirectory "vm-$EnvironmentSuffix.credentials.txt"
     New-Item -ItemType Directory -Path $credentialDirectory -Force | Out-Null
 
     $credentialContent = @(
@@ -1952,3 +2741,4 @@ if ($isCi) {
 }
 
 Write-Exists 'Deployment complete.'
+Complete-ScriptLogging -Status 'completed'

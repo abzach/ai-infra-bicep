@@ -1,4 +1,4 @@
-﻿# Resource Groups
+# Resource Groups
 
 This document describes the dual Resource Group architecture deployed at subscription scope by `bicep/templates/main.bicep`.
 
@@ -42,7 +42,7 @@ Every resource group and child resource inherits unified metadata tags configure
 
 | Tag Key | Example Value | Description |
 |---|---|---|
-| `project` | `aistack` | Identifying project name |
+| `project` | `tagProject` from `variables/core.yaml` | Identifying project name |
 | `workload` | `enterprise-ai-foundry` | Workload category used by cleanup validation |
 | `environment` | `dev` / `uat` | Target environment identifier |
 | `managedBy` | `bicep` | Deployment tool provenance |

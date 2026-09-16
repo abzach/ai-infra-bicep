@@ -7,7 +7,16 @@ Consolidated multi-stage pipelines are provided with runtime parameter selection
 | `deploy.yml` | Manual | Security gate, planning (What-If), deployment, and validation for selected environment (`dev`/`uat`) |
 | `cleanup.yml` | Manual | Preview (What-If) and guarded deletion of resource groups for selected environment (`dev`/`uat`) |
 
-Each pipeline imports the matching environment variables from `variables/${{ parameters.environment }}.yaml` and uses its `serviceConnection`. Define `vmAdminPassword` as a protected secret variable or variable-group value. Deployment passes it to `-VmAdminPassword` and suppresses credential output in CI.
+Each pipeline reads its variables from a variable group named `ai-infra-<environment>` because `variables/*.yaml` is intentionally untracked. The group must define:
+
+| Variable | Purpose |
+|---|---|
+| `serviceConnection` | Azure service connection used by every `AzureCLI@2` task |
+| `vmAdminPassword` | Protected secret passed to `-VmAdminPassword`; CI never prints it |
+| `aiInfraCoreYaml` | Full contents of your `variables/core.yaml` |
+| `aiInfraEnvYaml` | Full contents of your `variables/<environment>.yaml` |
+
+`aiInfraCoreYaml` and `aiInfraEnvYaml` are surfaced to the scripts as `AI_INFRA_CORE_YAML` and `AI_INFRA_ENV_YAML`; `scripts/config.ps1` materializes them for the run only.
 
 For in-depth architectural breakdown and stage details, see the [Azure DevOps Pipelines Documentation](../docs/azure-pipelines.md).
 

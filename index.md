@@ -5,6 +5,7 @@
 - [Architecture documentation index](docs/index.md)
 - [Contributor and coding-agent guidance](AGENTS.md)
 - [Application](app/README.md)
+- [Azure Automation runbooks](automation/README.md)
 - [Bicep infrastructure](bicep/README.md)
 - [PowerShell automation](scripts/README.md)
 - [Environment configuration](variables/README.md)

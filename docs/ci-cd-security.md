@@ -10,7 +10,7 @@ Hosting Infrastructure as Code (IaC) and workflow files in a public GitHub repos
 |---|---|---|
 | **Public Source Exposure** | Low | No credentials, tenant IDs, subscription IDs, or passwords are committed to source files. All secrets are passed via environment variables or secret vaults. |
 | **Unauthorized Workflow Execution** | Medium | Workflows use `workflow_dispatch` only (no automatic triggers on untrusted pull requests or commits). Only repository collaborators with write access can trigger runs. |
-| **Secret Exfiltration in Logs** | High | Scripts and pipelines suppress secret echoing, omit sensitive parameters from verbose output, and store local VM credentials in `.local/` (git-ignored). |
+| **Secret Exfiltration in Logs** | High | Scripts and pipelines suppress secret echoing, omit sensitive parameters from verbose output, store local VM credentials in `.local/` (git-ignored), and write only curated, secret-redacted troubleshooting messages to a size-capped, git-ignored `.logs/` folder (see `scripts/README.md`). |
 | **Stolen Static Credentials** | Critical | Workflows use **OpenID Connect (OIDC)** federated credentials rather than long-lived client secrets or certificates. |
 | **Accidental or Malicious Resource Deletion** | Critical | Cleanup workflows require explicit environment selection, execute a `-WhatIf` preview stage first, and can be gated with environment approvals. |
 | **Broad Azure Permissions** | High | Workflows use least-privilege service principals scoped specifically to target resource groups or required subscription role assignments. |
@@ -25,12 +25,19 @@ permissions:
   contents: read
 
 steps:
+  - name: Resolve Azure login secret names
+    id: azure-login-secrets
+    shell: pwsh
+    env:
+      AI_INFRA_ENV_YAML: ${{ secrets.AI_INFRA_ENV_YAML }}
+    run: |
+      # Reads githubAzure*SecretName values from variables/<environment>.yaml content.
   - name: Azure Login
     uses: azure/login@v3
     with:
-      client-id: ${{ secrets.AZURE_CLIENT_ID }}
-      tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-      subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      client-id: ${{ secrets[steps.azure-login-secrets.outputs.clientIdSecretName] }}
+      tenant-id: ${{ secrets[steps.azure-login-secrets.outputs.tenantIdSecretName] }}
+      subscription-id: ${{ secrets[steps.azure-login-secrets.outputs.subscriptionIdSecretName] }}
 ```
 
 ### OIDC Best Practices
@@ -45,9 +52,9 @@ Configure the following secrets in GitHub repository or environment settings:
 
 | Secret Name | Description | Recommended Scope |
 |---|---|---|
-| `AZURE_CLIENT_ID` | Application (client) ID of the Azure AD App Registration | Repository or Environment |
-| `AZURE_TENANT_ID` | Microsoft Entra ID Tenant ID | Repository or Environment |
-| `AZURE_SUBSCRIPTION_ID` | Target Azure Subscription ID | Repository or Environment |
+| Value of `githubAzureClientIdSecretName` in `variables/<environment>.yaml` (default `AZURE_CLIENT_ID`) | Application (client) ID of the Azure AD App Registration | Repository or Environment |
+| Value of `githubAzureTenantIdSecretName` in `variables/<environment>.yaml` (default `AZURE_TENANT_ID`) | Microsoft Entra ID Tenant ID | Repository or Environment |
+| Value of `githubAzureSubscriptionIdSecretName` in `variables/<environment>.yaml` (default `AZURE_SUBSCRIPTION_ID`) | Target Azure Subscription ID | Repository or Environment |
 | `VM_ADMIN_PASSWORD` | Secure password for the Jumpbox Windows VM local administrator | Environment (`dev` / `uat`) |
 
 ### GitHub Environments & Protection Rules

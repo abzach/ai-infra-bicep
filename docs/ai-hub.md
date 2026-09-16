@@ -1,6 +1,10 @@
-﻿# Azure AI Foundry Hub
+# Azure AI Foundry Hub
 
 This document details the configuration, security posture, diagnostic routing, and workspace connection for Azure AI Foundry Hub provisioned by `bicep/modules/aihub.bicep`.
+
+## Deployment flag
+
+This component is controlled by `deployAiFoundry` in your environment YAML. When set to `false`, the next `scripts/deploy.ps1` run removes the AI Project, the AI Hub, and the hub private endpoint.
 
 ## Resource Overview
 

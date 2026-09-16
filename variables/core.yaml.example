@@ -1,7 +1,26 @@
 # Shared values inherited by every environment. Environment YAML values override matching keys.
+#
+# Template for variables/core.yaml. Copy this file to core.yaml and edit
+# locally. Never put your own subscription, tenant, object IDs, or region choices in any other
+# file in this repository.
 
 variables:
-  location: swedencentral # Azure region for all regional resources; use an Azure region name such as swedencentral.
+  # ---- Component deployment flags -------------------------------------------------------
+  # Shared defaults. Override per environment in dev.yaml / uat.yaml.
+  # true  -> the component is deployed and kept current.
+  # false -> the component is removed by the next deploy.ps1 run if it exists.
+  #
+  # Components without a flag are never removed because they hold deployment state or are
+  # required by everything else: resource groups, the virtual network and private DNS,
+  # Key Vault (holds every deployment secret), Azure OpenAI, the managed identities, and
+  # the Key Vault / Azure OpenAI private endpoints.
+  deployStorage: true # Deploys the Storage account, blob container, and blob private endpoint; allowed values: true, false. Must be true when deployAiFoundry is true.
+  deployLogAnalytics: true # Deploys the Log Analytics workspace and resource diagnostics; allowed values: true, false. Must be true when enableAuditDiagnostics is true.
+  deployAiFoundry: true # Deploys the AI Hub, AI Project, and hub private endpoint; allowed values: true, false.
+  deployVm: true # Deploys the jumpbox VM with its NIC, public IP, NSG, OS disk, and auto-shutdown schedule; allowed values: true, false. Setting false also deletes the OS disk.
+  deployAutomation: true # Deploys the Automation Account, its user-assigned identity, and repository runbooks; allowed values: true, false. Must be false when deployVm is false.
+
+  location: eastus # Azure region for all regional resources; use an Azure region name such as swedencentral.
 
   vnetAddressSpace: 10.0.0.0/16 # VNet IPv4 CIDR; must contain both subnet prefixes and must not overlap connected networks.
   servicesSubnetAddressPrefix: 10.0.1.0/24 # Subnet CIDR for private endpoints and service access; must be inside vnetAddressSpace.
@@ -35,12 +54,22 @@ variables:
   vmSpotMaxPrice: -1 # Maximum Spot price in USD/hour; -1 allows up to pay-as-you-go price, or use a nonnegative whole number.
   vmAutoShutdownEnabled: true # Enables the daily VM auto-shutdown schedule; allowed values: true, false.
   vmAutoShutdownTime: '0300' # Auto-shutdown time in 24-hour HHmm format, from '0000' through '2359'.
-  vmAutoShutdownTimeZone: 'India Standard Time' # Windows time-zone ID used by the auto-shutdown schedule.
+  vmAutoShutdownTimeZone: 'UTC' # Windows time-zone ID used by the auto-shutdown schedule.
+  vmGuestTimeZone: 'UTC' # Windows time-zone ID applied inside the jumpbox guest OS by setup.ps1; use any Windows time-zone ID.
+
+  automationRuntimeVersion: '7.4' # PowerShell runtime used by Automation runbooks; allowed value: 7.4.
+  automationAzVersion: '12.3.0' # Az package version installed in the PowerShell runtime environment; use a version supported by Azure Automation.
+  vmStartScheduleEnabled: true # Links start-vm to the daily VM start schedule; allowed values: true, false.
+  vmStartScheduleTime: '1100' # Daily VM start time in 24-hour HHmm format, from '0000' through '2359'.
+  vmStartScheduleTimeZone: Etc/UTC # IANA time-zone ID used by the Azure Automation schedule.
 
   enableAuditDiagnostics: true # Configures supported resource diagnostic logs in Log Analytics; allowed values: true, false.
   logAnalyticsRetentionDays: 30 # Log retention; allowed values: 30-730 days for the PerGB2018 workspace SKU.
   logAnalyticsDailyQuotaGb: 0.5 # Daily ingestion cap in GB; use -1 for no cap or a positive decimal supported by Azure.
 
-  tagProject: aistack # Value for the project resource tag; any non-empty Azure tag value.
+  tagProject: aifoundry # Value for the project resource tag; any non-empty Azure tag value.
   tagWorkload: enterprise-ai-foundry # Value for the workload resource tag; any non-empty Azure tag value.
   tagManagedBy: bicep # Value for the managedBy resource tag; identifies the deployment owner/tool.
+
+  admin: [] # Administrators granted highest level data-plane and control-plane roles across all services; array of objects [{ objectId: '...', principalType: 'User'|'Group'|'ServicePrincipal' }] or GUID strings.
+  user: [] # Users granted permissions to use, operate, modify, and view across all services; array of objects [{ objectId: '...', principalType: 'User'|'Group'|'ServicePrincipal' }] or GUID strings.

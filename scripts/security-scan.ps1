@@ -17,7 +17,17 @@ function Get-TemplateResources {
             return
         }
 
-        foreach ($resource in $templateResources.Value) {
+        $resourceValue = $templateResources.Value
+        $resourceItems = if (
+            $resourceValue -is [pscustomobject] -and
+            $null -eq $resourceValue.PSObject.Properties['type']
+        ) {
+            @($resourceValue.PSObject.Properties.Value)
+        } else {
+            @($resourceValue)
+        }
+
+        foreach ($resource in $resourceItems) {
             $resources.Add($resource)
             $propertiesProperty = $resource.PSObject.Properties['properties']
             if ($null -ne $propertiesProperty) {
@@ -39,7 +49,9 @@ function Get-ResourcesOfType {
         [Parameter(Mandatory)] [string] $Type
     )
 
-    return @($Resources | Where-Object { $_.type -eq $Type })
+    return @($Resources | Where-Object {
+        $null -ne $_.PSObject.Properties['type'] -and $_.type -eq $Type -and $null -ne $_.PSObject.Properties['properties']
+    })
 }
 
 function Test-Rule {
@@ -120,6 +132,31 @@ $workspaces = Get-ResourcesOfType -Resources $resources -Type 'Microsoft.Machine
 Test-Rule -Condition ($workspaces.Count -ge 2) -Message 'AI Hub and Project workspaces are defined.' -Failures $failures
 foreach ($workspace in $workspaces) {
     Test-Rule -Condition ($workspace.properties.publicNetworkAccess -eq 'Disabled') -Message "AI workspace '$($workspace.name)' public network access is disabled." -Failures $failures
+}
+
+$automationAccounts = @(Get-ResourcesOfType -Resources $resources -Type 'Microsoft.Automation/automationAccounts')
+Test-Rule -Condition ($automationAccounts.Count -eq 1) -Message 'One Automation Account is defined.' -Failures $failures
+foreach ($automationAccount in $automationAccounts) {
+    Test-Rule -Condition ($automationAccount.identity.type -eq 'UserAssigned') -Message 'Automation uses only a user-assigned managed identity.' -Failures $failures
+    Test-Rule -Condition ($automationAccount.properties.disableLocalAuth -eq $true) -Message 'Automation local authentication is disabled.' -Failures $failures
+    Test-Rule -Condition ($automationAccount.properties.publicNetworkAccess -eq $false) -Message 'Automation public network access is disabled.' -Failures $failures
+}
+
+$automationCredentials = @(Get-ResourcesOfType -Resources $resources -Type 'Microsoft.Automation/automationAccounts/credentials')
+Test-Rule -Condition ($automationCredentials.Count -eq 0) -Message 'No Automation credential assets are defined.' -Failures $failures
+
+$automationWebhooks = @(Get-ResourcesOfType -Resources $resources -Type 'Microsoft.Automation/automationAccounts/webhooks')
+Test-Rule -Condition ($automationWebhooks.Count -eq 0) -Message 'No Automation webhooks are defined.' -Failures $failures
+
+$automationJobSchedules = @(Get-ResourcesOfType -Resources $resources -Type 'Microsoft.Automation/automationAccounts/jobSchedules')
+Test-Rule -Condition ($automationJobSchedules.Count -eq 0) -Message 'Automation job links are deferred until runbooks are published.' -Failures $failures
+
+$roleAssignments = Get-ResourcesOfType -Resources $resources -Type 'Microsoft.Authorization/roleAssignments'
+$vmContributorRoleId = '9980e02c-c2be-4d73-94e8-173b1dc7cf3c'
+$automationVmRoles = @($roleAssignments | Where-Object { [string]$_.properties.roleDefinitionId -match $vmContributorRoleId })
+Test-Rule -Condition ($automationVmRoles.Count -eq 1) -Message 'Automation has exactly one Virtual Machine Contributor assignment.' -Failures $failures
+foreach ($automationVmRole in $automationVmRoles) {
+    Test-Rule -Condition ([string]$automationVmRole.scope -match 'Microsoft.Compute/virtualMachines') -Message 'Automation VM Contributor is scoped to the VM.' -Failures $failures
 }
 
 $diagnosticSettings = Get-ResourcesOfType -Resources $resources -Type 'Microsoft.Insights/diagnosticSettings'

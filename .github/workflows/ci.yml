@@ -1,0 +1,78 @@
+name: CI Tests
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  static-tests:
+    name: Bicep & Static Analysis
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Run Static Tests
+        shell: pwsh
+        run: ./scripts/test.ps1 -Mode Static
+
+  security-scan:
+    name: IaC Security Policy Scan
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Run Security Scan
+        shell: pwsh
+        run: ./scripts/security-scan.ps1
+
+  ai-safety-scan:
+    name: AI Safety & Prompt Injection Scan
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Run AI Safety Scan
+        shell: pwsh
+        run: ./scripts/scan-ai-safety.ps1
+
+  python-app-check:
+    name: Python App Syntax & Lint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Validate Python App Syntax
+        shell: pwsh
+        run: |
+          python -m py_compile app/chat.py
+          python -m py_compile app/test.py
+          Write-Host "Python files compiled successfully."
+
+  formatting-check:
+    name: Git & Formatting Check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Check for trailing whitespace and conflict markers
+        shell: pwsh
+        run: |
+          git diff --check

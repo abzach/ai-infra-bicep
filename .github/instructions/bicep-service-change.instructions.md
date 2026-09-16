@@ -7,6 +7,7 @@ applyTo: "bicep/**/*.bicep,variables/**/*.yaml"
 - Keep `bicep/templates/main.bicep` as the subscription-scope entry point and place resource-specific logic in `bicep/modules/`.
 - Use deterministic names from `scripts/config.ps1` and `main.bicep`; do not invent one-off resource names.
 - Apply the shared `tags` object to every taggable resource so `createdDate`, `lastModifiedDate`, and `desiredStateHash` remain consistent.
+- Azure Automation runtime environments accept at most three tags. Leave that child resource untagged rather than truncating the shared tag set; keep the parent Automation Account and runbooks fully tagged.
 - Keep public network access disabled for Key Vault, Storage, Azure OpenAI, AI Hub, and AI Project unless a task explicitly changes the security model.
 - Prefer private endpoints and private DNS zone links for new data-plane services.
 - Add outputs only when a deployment script, test, module, or documentation needs them.
@@ -18,4 +19,3 @@ applyTo: "bicep/**/*.bicep,variables/**/*.yaml"
 ## Keep this skill current
 
 If this task needed steps beyond what is listed above, add them to this file before finishing so future Bicep changes benefit.
-

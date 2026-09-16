@@ -11,12 +11,13 @@ This repository deploys a private Azure AI Foundry learning environment with sta
 - `variables/core.yaml` contains shared non-SKU defaults.
 - `variables/dev.yaml` and `variables/uat.yaml` contain environment naming, identity, SKU, capacity, and pipeline values.
 - `scripts/config.ps1` merges and validates YAML configuration.
-- `scripts/deploy.ps1` validates Azure context, exits early for already-current environments, deploys Bicep when needed, writes Key Vault secrets through ARM, bootstraps the VM through Run Command, and applies the VM password.
+- `scripts/deploy.ps1` non-interactively updates Bicep, validates Azure context, exits early for already-current environments, deploys Bicep when needed, publishes runbooks before linking schedules, writes Key Vault secrets through ARM, bootstraps the VM through Run Command, applies the VM password, and emits a timing summary for performance tuning.
+- `automation/` contains PowerShell runbooks automatically validated and published by `scripts/deploy.ps1`.
 - `scripts/test.ps1` provides `Static`, `Validate`, `Smoke`, and `ChatDual` modes.
 - `scripts/security-scan.ps1` validates generated IaC security invariants.
 - `scripts/cleanup.ps1` deletes only tag-validated environment resource groups.
 - `app/` contains the managed-identity Python chat and connectivity test.
-- `.mcp.json` and `.vscode/mcp.json` register the official Bicep MCP server (`Azure.Bicep.McpServer` via `dnx`) for schema lookups, best practices, diagnostics, formatting, AVM metadata, and ARM decompilation; see `.github/instructions/bicep-mcp-server.instructions.md`.
+- `.mcp.json` and `.vscode/mcp.json` register the official Bicep MCP server (`Azure.Bicep.McpServer` via `dnx`) for schema lookups, best practices, diagnostics, formatting, AVM metadata, and ARM decompilation, and the Azure MCP server (`@azure/mcp`) for live subscription reads; see `.github/instructions/bicep-mcp-server.instructions.md` and `.github/instructions/azure-mcp-server.instructions.md`.
 
 ## Required invariants
 
@@ -24,17 +25,22 @@ This repository deploys a private Azure AI Foundry learning environment with sta
 - Keep Storage shared-key access, blob public access, and Azure OpenAI local authentication disabled.
 - Use private endpoints and private DNS for service data-plane access.
 - Use resource-scoped data-plane RBAC. The VM needs only `Key Vault Secrets User` and `Cognitive Services OpenAI User`; it does not need Storage access for bootstrap.
+- The Automation Account uses its dedicated user-assigned identity, and the VM-start runbook receives Virtual Machine Contributor only at the VM scope.
 - Keep Trusted Launch, Secure Boot, vTPM, and `Windows_Client` licensing on the selected Windows image.
 - Restrict RDP to explicitly supplied/detected CIDRs and retain the deny-all RDP rule.
 - Do not reintroduce workstation Key Vault or Storage data-plane operations. The deployment host writes secret resources through ARM; app files reach the VM through Run Command.
 - Never print or persist VM credentials in CI logs or workspaces. Local credential output belongs only under ignored `.local/`.
+- Never rotate the VM admin password on a rerun. A new password is issued only on first deploy, when the VM is being recreated, or when `-RotateVmPassword` is passed.
+- Never remove Key Vault, networking, private DNS, Azure OpenAI, their private endpoints, or the managed identities. Only flagged components (`deployStorage`, `deployLogAnalytics`, `deployAiFoundry`, `deployVm`, `deployAutomation`) may be removed, and `deployVm: false` must also delete the OS disk.
+- Never commit user configuration. Only `variables/*.yaml.example` templates are tracked, and no other file may contain a specific user's region, prefix, object IDs, SKUs, or time zones.
 
 ## Configuration rules
 
 - Put shared behavior and non-SKU defaults in `variables/core.yaml`.
-- Put every SKU, capacity, environment identity, and environment naming choice in `variables/dev.yaml` or `variables/uat.yaml`.
+- Put every SKU, capacity, environment identity, environment naming choice, and public IP DNS label in `variables/dev.yaml` or `variables/uat.yaml`.
 - Add an inline comment to every YAML variable describing purpose and allowed values.
-- Wire new settings through `scripts/config.ps1`, `bicep/templates/main.bicep`, affected modules, `main.bicepparam`, tests, and documentation.
+- Wire new settings through `scripts/config.ps1`, `bicep/templates/main.bicep`, affected modules, `main.bicepparam`, the matching `variables/*.yaml.example` templates, tests, and documentation.
+- Keep placeholders, not values, in `.example` templates, and keep the `adminObjectIds` placeholder validation working.
 - Keep the deployment no-op guard accurate by ensuring changes that alter desired infrastructure or deployed app behavior are included in the `desiredStateHash` inputs in `scripts/deploy.ps1`.
 - Preserve existing naming constraints, including the subscription-derived four-character suffix.
 
@@ -43,8 +49,9 @@ This repository deploys a private Azure AI Foundry learning environment with sta
 1. Read the relevant YAML, script, template, and module before editing.
 2. Use `.\scripts\deploy.ps1 <dev|uat> -WhatIf` for a non-mutating Azure preview. Normal deploy reruns should exit early when `desiredStateHash` is current; use `-ForceRedeploy` only when an intentional refresh is required.
 3. Never run `scripts/cleanup.ps1` without explicit authorization; use `-WhatIf` first.
-4. Do not commit `.azure/`, `.local/`, `.env`, credentials, generated JSON, logs, or machine-local notes.
+4. Do not commit `.azure/`, `.local/`, `.logs/`, `.env`, credentials, generated JSON, logs, or machine-local notes.
 5. Do not expose passwords, tokens, tenant-specific secrets, or generated credential files in commits or CI output.
+6. Preserve the completion timing summary from `common.ps1` when changing script flow so console output and `.logs/ai-infra.log` continue to show stage, step, resource-operation, and total durations.
 
 ## Validation
 

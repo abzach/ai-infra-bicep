@@ -12,7 +12,7 @@ The network module provisions a secured Virtual Network (VNet) with isolated sub
   - `services` (`10.0.1.0/24`): Hosts Private Endpoints for Key Vault, Storage Blob, Azure OpenAI, and AI Hub.
   - `vm` (`10.0.2.0/24`): Hosts the Jumpbox VM Network Interface.
 - **Network Security Group (NSG):** `vm-<baseName>-<environmentSuffix>-<nameSuffix>-nsg`
-- **Public IP:** `vm-<baseName>-<environmentSuffix>-<nameSuffix>-pip` (Standard SKU, Static allocation)
+- **Public IP:** `vm-<baseName>-<environmentSuffix>-<nameSuffix>-pip` (Standard SKU, Static allocation, optional DNS label)
 - **Private DNS Zones:** Linked to the VNet with automatic internal name resolution.
 
 ## Important Configurations
@@ -24,6 +24,7 @@ The network module provisions a secured Virtual Network (VNet) with isolated sub
 | **Service Endpoints** | `Microsoft.CognitiveServices`, `Microsoft.KeyVault`, `Microsoft.Storage` | Configured on services subnet |
 | **VM Subnet** | `10.0.2.0/24` | Subnet dedicated to Jumpbox VM |
 | **Public IP SKU** | `Standard` | Static allocation for Jumpbox VM public IP |
+| **Public IP DNS Label** | `vmPublicIpDnsNameLabel` from environment YAML | Optional label for `<label>.<region>.cloudapp.azure.com`; for example `az-swe-aifp` in `swedencentral` creates `az-swe-aifp.swedencentral.cloudapp.azure.com` |
 | **NIC Accelerated Networking** | `true` | Enabled on the VM Network Interface (`vmAcceleratedNetworking`) |
 | **NSG Default Deny RDP** | `Deny` / Priority `4096` | Blocks all inbound RDP (`TCP 3389`) from any source (`*`) |
 | **NSG Explicit RDP Whitelist** | Priority `200+` | Allows RDP only from explicitly supplied IPv4 CIDRs (`rdpAllowedIpCidrs`) |

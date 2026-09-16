@@ -1,6 +1,10 @@
-﻿# Azure Log Analytics Workspace
+# Azure Log Analytics Workspace
 
 This document covers the configuration, retention rules, and diagnostic ingestion settings for the Log Analytics workspace provisioned by `bicep/modules/loganalytics.bicep`.
+
+## Deployment flag
+
+This component is controlled by `deployLogAnalytics` in your environment YAML. When set to `false`, the next `scripts/deploy.ps1` run removes diagnostic settings that target the workspace and then the workspace itself, and the daily-cap step is skipped. `enableAuditDiagnostics` requires `deployLogAnalytics`.
 
 ## Resource Overview
 

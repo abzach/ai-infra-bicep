@@ -16,6 +16,7 @@
 - [Azure AI Foundry Project](ai-project.md)
 - [Log Analytics Workspace](log-analytics.md)
 - [Windows Jumpbox VM](virtual-machine.md)
+- [Azure Automation Account](automation-account.md)
 - [Python Chat Application](chat-application.md)
 
 ---

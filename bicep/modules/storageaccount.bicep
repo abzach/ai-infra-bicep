@@ -14,9 +14,6 @@ param location string
 ])
 param skuName string = 'Standard_LRS'
 
-@description('Object IDs of users that should receive Storage Blob Data Contributor on this account. Leave empty to skip.')
-param adminObjectIds array = []
-
 @description('Storage account access tier.')
 @allowed([
   'Cool'
@@ -90,16 +87,6 @@ resource chatAppContainer 'Microsoft.Storage/storageAccounts/blobServices/contai
     publicAccess: 'None'
   }
 }
-
-resource adminStorageBlobDataContributorRoles 'Microsoft.Authorization/roleAssignments@2022-04-01' = [for adminId in adminObjectIds: {
-  name: guid(resourceGroup().id, storageAccount.id, adminId, 'ba92f5b4-2d11-453d-a403-e96b0029c9fe-admin')
-  scope: storageAccount
-  properties: {
-    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'ba92f5b4-2d11-453d-a403-e96b0029c9fe')
-    principalId: adminId
-    principalType: 'User'
-  }
-}]
 
 output id string = storageAccount.id
 output name string = storageAccount.name

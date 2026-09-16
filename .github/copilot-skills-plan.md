@@ -4,10 +4,13 @@
 
 | Skill | Why it is useful here | Implemented as |
 |---|---|---|
-| Bicep service/module change | New Azure services must preserve naming, tags, private networking, outputs, and module orchestration. | `instructions/bicep-service-change.instructions.md` |
+| Bicep service/module change | New Azure services must preserve naming, supported tag limits, private networking, outputs, and module orchestration. | `instructions/bicep-service-change.instructions.md` |
 | Bicep MCP server usage | The official Bicep MCP server gives authoritative resource schemas, best practices, diagnostics, formatting, AVM lookup, deployment previews, and ARM decompilation instead of guesswork. | `instructions/bicep-mcp-server.instructions.md`, registered in `.mcp.json` and `.vscode/mcp.json` |
-| Deployment orchestrator change | `deploy.ps1` coordinates Azure context, idempotency, Bicep, secrets, diagnostics, app bootstrap, and credential handoff. | `instructions/deployment-orchestration.instructions.md` |
-| Security hardening/review | The stack has strict invariants around public access, RBAC, diagnostics, VM security, and secret handling. | `instructions/security-review.instructions.md` |
+| Azure MCP server usage | Live subscription reads turn deployment failures, SKU/quota/region questions, RBAC gaps, and flag drift into evidence instead of guesses, and pair with the Bicep MCP server for accurate fixes. | `instructions/azure-mcp-server.instructions.md`, registered in `.mcp.json` and `.vscode/mcp.json` |
+| Azure RBAC preflight | First-time deployments fail without role-assignment write permission; the script self-remediates before failing, and agents must keep that path intact. | `instructions/azure-rbac-preflight.instructions.md` |
+| Local configuration files | User configuration lives only in untracked `variables/*.yaml`; only `.example` templates are committed and no other file may carry user values. | `instructions/local-configuration.instructions.md` |
+| Deployment orchestrator change | `deploy.ps1` coordinates Azure context, idempotency, Bicep updates, ordered runbook publication, secrets, diagnostics, app bootstrap, and credential handoff. | `instructions/deployment-orchestration.instructions.md` |
+| Security hardening/review | The stack has strict invariants around public access, RBAC, diagnostics, VM security, secret handling, and nested compiled ARM resources. | `instructions/security-review.instructions.md` |
 | App bootstrap/runtime change | Python and VM bootstrap changes must keep managed identity auth and private Key Vault/OpenAI access intact. | `instructions/app-bootstrap.instructions.md` |
 | Pipeline/workflow change | GitHub Actions and Azure DevOps must run equivalent plan, deploy, and validation behavior without leaking secrets. | `instructions/pipeline-workflow.instructions.md` |
 | Validation and troubleshooting | Deploy fixes normally require static scans plus live Validate/Smoke/ChatDual follow-up when an environment exists. | `instructions/validation-troubleshooting.instructions.md` |
@@ -45,4 +48,3 @@ See `instructions/bicep-mcp-server.instructions.md` for the full mapping and usa
 - Use the Bicep MCP server for any Bicep schema, best-practice, diagnostics, formatting, or AVM lookup task.
 - If a skill file is missing a step you needed, update it before finishing (see each file's "Keep this skill current" section).
 - Update every doc affected by the change in the same change (see `instructions/documentation-sync.instructions.md`).
-

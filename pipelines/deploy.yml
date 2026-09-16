@@ -11,7 +11,13 @@ trigger: none
 pr: none
 
 variables:
-  - template: ../variables/${{ parameters.environment }}.yaml
+  # variables/*.yaml is intentionally untracked, so pipeline variables come from a variable
+  # group named ai-infra-<environment>. The group must define:
+  #   serviceConnection  - Azure service connection name
+  #   vmAdminPassword    - secret VM administrator password
+  #   aiInfraCoreYaml    - full contents of variables/core.yaml
+  #   aiInfraEnvYaml     - full contents of variables/<environment>.yaml
+  - group: ai-infra-${{ parameters.environment }}
 
 stages:
   - stage: Security
@@ -53,6 +59,9 @@ stages:
               scriptLocation: scriptPath
               scriptPath: scripts/deploy.ps1
               arguments: -EnvironmentSuffix ${{ parameters.environment }} -WhatIf
+            env:
+              AI_INFRA_CORE_YAML: $(aiInfraCoreYaml)
+              AI_INFRA_ENV_YAML: $(aiInfraEnvYaml)
 
   - stage: Deploy
     displayName: Deploy phase
@@ -73,6 +82,8 @@ stages:
               arguments: -EnvironmentSuffix ${{ parameters.environment }} -VmAdminPassword $env:VM_ADMIN_PASSWORD
             env:
               VM_ADMIN_PASSWORD: $(vmAdminPassword)
+              AI_INFRA_CORE_YAML: $(aiInfraCoreYaml)
+              AI_INFRA_ENV_YAML: $(aiInfraEnvYaml)
 
   - stage: Validate
     displayName: Validate phase
@@ -92,3 +103,6 @@ stages:
               scriptLocation: scriptPath
               scriptPath: scripts/test.ps1
               arguments: -Mode Validate -EnvironmentSuffix ${{ parameters.environment }}
+            env:
+              AI_INFRA_CORE_YAML: $(aiInfraCoreYaml)
+              AI_INFRA_ENV_YAML: $(aiInfraEnvYaml)

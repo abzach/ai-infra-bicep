@@ -11,7 +11,9 @@ trigger: none
 pr: none
 
 variables:
-  - template: ../variables/${{ parameters.environment }}.yaml
+  # variables/*.yaml is intentionally untracked, so pipeline variables come from a variable
+  # group named ai-infra-<environment> (see pipelines/README.md).
+  - group: ai-infra-${{ parameters.environment }}
 
 stages:
   - stage: Preview
@@ -30,6 +32,9 @@ stages:
               scriptLocation: scriptPath
               scriptPath: scripts/cleanup.ps1
               arguments: -EnvironmentSuffix ${{ parameters.environment }} -WhatIf
+            env:
+              AI_INFRA_CORE_YAML: $(aiInfraCoreYaml)
+              AI_INFRA_ENV_YAML: $(aiInfraEnvYaml)
 
   - stage: Destroy
     displayName: Destroy resources
@@ -48,3 +53,6 @@ stages:
               scriptLocation: scriptPath
               scriptPath: scripts/cleanup.ps1
               arguments: -EnvironmentSuffix ${{ parameters.environment }} -Force
+            env:
+              AI_INFRA_CORE_YAML: $(aiInfraCoreYaml)
+              AI_INFRA_ENV_YAML: $(aiInfraEnvYaml)

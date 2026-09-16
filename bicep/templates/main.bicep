@@ -24,8 +24,19 @@ param location string
 ])
 param skuName string
 
-@description('Entra ID object IDs to grant Key Vault Administrator and Storage Blob Data Contributor. Supply one or more IDs.')
-param adminObjectIds array
+type actorAssignment = {
+  objectId: string
+  principalType: ('User' | 'Group' | 'ServicePrincipal')?
+}
+
+@description('Administrator actors granted highest level data-plane and control-plane roles across all services.')
+param adminActors actorAssignment[] = []
+
+@description('User actors granted permissions to use, operate, modify, and view services.')
+param userActors actorAssignment[] = []
+
+@description('Legacy Entra ID object IDs. Maintained for backwards compatibility.')
+param adminObjectIds array = []
 
 @description('Object ID of the deploying identity (service principal or user). Granted Key Vault Secrets Officer so it can sync secrets during deployment. Leave empty to skip.')
 param deployingObjectId string = ''
@@ -119,7 +130,40 @@ param vmAutoShutdownEnabled bool = true
 param vmAutoShutdownTime string = '0300'
 
 @description('Timezone used by VM auto-shutdown.')
-param vmAutoShutdownTimeZone string = 'India Standard Time'
+param vmAutoShutdownTimeZone string = 'UTC'
+
+@description('Deploy the Storage account and its private endpoint. Set to false to remove them; required when deployAiFoundry is true.')
+param deployStorage bool = true
+
+@description('Deploy the Log Analytics workspace. Set to false to remove it; required when audit diagnostics are enabled.')
+param deployLogAnalytics bool = true
+
+@description('Deploy the AI Foundry hub, project, and hub private endpoint. Set to false to remove them.')
+param deployAiFoundry bool = true
+
+@description('Deploy the jumpbox VM and its NIC, public IP, NSG, and auto-shutdown schedule. Set to false to remove them.')
+param deployVm bool = true
+
+@description('Provision the Automation Account and repository runbooks. Requires deployVm because the runbook targets the jumpbox.')
+param deployAutomation bool = true
+
+@description('PowerShell runtime version for Automation runbooks.')
+param automationRuntimeVersion string = '7.4'
+
+@description('Az package version for the Automation runtime.')
+param automationAzVersion string = '12.3.0'
+
+@description('Runbooks discovered from the repository automation folder.')
+param automationRunbooks array = []
+
+@description('Enable the daily VM start schedule.')
+param vmStartScheduleEnabled bool = true
+
+@description('First occurrence of the VM start schedule.')
+param vmStartScheduleStartTime string = ''
+
+@description('Time zone for the VM start schedule.')
+param vmStartScheduleTimeZone string = 'Etc/UTC'
 
 @description('Enable private endpoints for AI Hub and AI Project workspaces.')
 param privateAiWorkspacesOnly bool = true
@@ -135,6 +179,9 @@ param vmSubnetAddressPrefix string = '10.0.2.0/24'
 
 @description('Enable accelerated networking on the VM NIC.')
 param vmAcceleratedNetworking bool = true
+
+@description('Optional DNS name label for the VM public IP. Leave empty to skip a public DNS name.')
+param vmPublicIpDnsNameLabel string = ''
 
 @description('Storage account access tier.')
 @allowed([
@@ -196,10 +243,12 @@ var hubName                  = 'hub-${baseName}-${environmentSuffix}-${nameSuffi
 var projectName              = 'proj-${baseName}-${environmentSuffix}-${nameSuffix}'
 var hubManagedIdentityName   = 'mi-${baseName}-hub-${environmentSuffix}-${nameSuffix}'
 var vmManagedIdentityName    = 'mi-${baseName}-vm-${environmentSuffix}-${nameSuffix}'
+var automationManagedIdentityName = 'mi-${baseName}-automation-${environmentSuffix}-${nameSuffix}'
+var automationAccountName    = 'aa-${baseName}-${environmentSuffix}-${nameSuffix}'
+var vmStartScheduleName      = 'start-vm-daily'
 var vnetName                 = 'vnet-${baseName}-${environmentSuffix}-${nameSuffix}'
 var vmName                   = 'vm-${baseName}-${environmentSuffix}-${nameSuffix}'
 var lawWorkspaceName         = 'law-${baseName}-${environmentSuffix}-${nameSuffix}'
-
 resource coreRg 'Microsoft.Resources/resourceGroups@2024-07-01' = {
   name: coreResourceGroupName
   location: location
@@ -225,6 +274,8 @@ module networkModule '../modules/network.bicep' = {
     tags: effectiveTags
     vmName: vmName
     rdpAllowedIpCidrs: rdpAllowedIpCidrs
+    deployVmNetworking: deployVm
+    publicIpDnsNameLabel: vmPublicIpDnsNameLabel
   }
 }
 
@@ -248,14 +299,30 @@ module vmManagedIdentityModule '../modules/managedidentity.bicep' = {
   }
 }
 
-module storageModule '../modules/storageaccount.bicep' = {
+module automationManagedIdentityModule '../modules/managedidentity.bicep' = if (deployAutomation) {
+  name: 'automationManagedIdentityDeployment'
+  scope: coreRg
+  params: {
+    identityName: automationManagedIdentityName
+    location: location
+    tags: effectiveTags
+  }
+}
+
+var legacyAdminActors = [for id in adminObjectIds: {
+  objectId: id
+  principalType: 'User'
+}]
+
+var effectiveAdminActors = !empty(adminActors) ? adminActors : legacyAdminActors
+
+module storageModule '../modules/storageaccount.bicep' = if (deployStorage) {
   name: 'storageDeployment'
   scope: coreRg
   params: {
     storageAccountName: storageAccountName
     location: location
     skuName: skuName
-    adminObjectIds: adminObjectIds
     accessTier: storageAccessTier
     containerName: containerName
     blobSoftDeleteRetentionDays: storageBlobSoftDeleteRetentionDays
@@ -270,7 +337,6 @@ module keyVaultModule '../modules/keyvault.bicep' = {
   params: {
     keyVaultName: keyVaultName
     location: location
-    adminObjectIds: adminObjectIds
     deployingObjectId: deployingObjectId
     deployingPrincipalType: deployingPrincipalType
     softDeleteRetentionInDays: keyVaultSoftDeleteRetentionDays
@@ -278,7 +344,7 @@ module keyVaultModule '../modules/keyvault.bicep' = {
   }
 }
 
-module lawModule '../modules/loganalytics.bicep' = {
+module lawModule '../modules/loganalytics.bicep' = if (deployLogAnalytics) {
   name: 'logAnalyticsDeployment'
   scope: coreRg
   params: {
@@ -288,6 +354,9 @@ module lawModule '../modules/loganalytics.bicep' = {
     tags: effectiveTags
   }
 }
+
+// Diagnostics are wired only when Log Analytics is deployed; an empty ID disables them in the modules.
+var logAnalyticsWorkspaceResourceId = deployLogAnalytics ? lawModule!.outputs.id : ''
 
 module openAiModule '../modules/openai.bicep' = {
   name: 'openAiDeployment'
@@ -305,7 +374,7 @@ module openAiModule '../modules/openai.bicep' = {
     secondaryModelVersion: secondaryModelVersion
     secondaryModelSkuName: secondaryModelSkuName
     secondaryCapacityK: secondaryCapacityK
-    logAnalyticsWorkspaceResourceId: lawModule.outputs.id
+    logAnalyticsWorkspaceResourceId: logAnalyticsWorkspaceResourceId
     disableLocalAuth: disableLocalAuth
     tags: effectiveTags
   }
@@ -318,6 +387,7 @@ module managedIdentityRolesModule '../modules/managedidentityroles.bicep' = {
     storageAccountName: storageAccountName
     keyVaultName: keyVaultName
     openAiAccountName: openAiAccountName
+    grantStorageRole: deployStorage
     hubIdentityPrincipalId: hubManagedIdentityModule.outputs.principalId
     vmIdentityPrincipalId: vmManagedIdentityModule.outputs.principalId
   }
@@ -328,14 +398,14 @@ module managedIdentityRolesModule '../modules/managedidentityroles.bicep' = {
   ]
 }
 
-module storagePrivateEndpointModule '../modules/privateendpoint.bicep' = {
+module storagePrivateEndpointModule '../modules/privateendpoint.bicep' = if (deployStorage) {
   name: 'storagePrivateEndpointDeployment'
   scope: networkRg
   params: {
     privateEndpointName: '${storageAccountName}-blob-pe'
     location: location
     subnetId: networkModule.outputs.servicesSubnetId
-    privateLinkServiceId: storageModule.outputs.id
+    privateLinkServiceId: storageModule!.outputs.id
     groupId: 'blob'
     dnsZoneId: networkModule.outputs.storageDnsZoneId
     tags: effectiveTags
@@ -370,48 +440,48 @@ module openAiPrivateEndpointModule '../modules/privateendpoint.bicep' = {
   }
 }
 
-module aiHubModule '../modules/aihub.bicep' = {
+module aiHubModule '../modules/aihub.bicep' = if (deployAiFoundry) {
   name: 'aiHubDeployment'
   scope: coreRg
   params: {
     hubName: hubName
     location: location
-    storageAccountResourceId: storageModule.outputs.id
+    storageAccountResourceId: deployStorage ? storageModule!.outputs.id : ''
     keyVaultResourceId: keyVaultModule.outputs.id
     openAiEndpoint: openAiModule.outputs.endpoint
     openAiResourceId: openAiModule.outputs.id
     identityId: hubManagedIdentityModule.outputs.id
-    logAnalyticsWorkspaceResourceId: lawModule.outputs.id
+    logAnalyticsWorkspaceResourceId: logAnalyticsWorkspaceResourceId
     tags: effectiveTags
   }
 }
 
-module aiProjectModule '../modules/aiproject.bicep' = {
+module aiProjectModule '../modules/aiproject.bicep' = if (deployAiFoundry) {
   name: 'aiProjectDeployment'
   scope: coreRg
   params: {
     projectName: projectName
     location: location
-    hubResourceId: aiHubModule.outputs.id
+    hubResourceId: aiHubModule!.outputs.id
     tags: effectiveTags
   }
 }
 
-module aiHubPrivateEndpointModule '../modules/privateendpoint.bicep' = if (privateAiWorkspacesOnly) {
+module aiHubPrivateEndpointModule '../modules/privateendpoint.bicep' = if (deployAiFoundry && privateAiWorkspacesOnly) {
   name: 'aiHubPrivateEndpointDeployment'
   scope: networkRg
   params: {
     privateEndpointName: '${hubName}-pe'
     location: location
     subnetId: networkModule.outputs.servicesSubnetId
-    privateLinkServiceId: aiHubModule.outputs.id
+    privateLinkServiceId: aiHubModule!.outputs.id
     groupId: 'amlworkspace'
     dnsZoneId: networkModule.outputs.amlApiDnsZoneId
     tags: effectiveTags
   }
 }
 
-module vmModule '../modules/vm.bicep' = {
+module vmModule '../modules/vm.bicep' = if (deployVm) {
   name: 'vmDeployment'
   scope: coreRg
   params: {
@@ -438,21 +508,81 @@ module vmModule '../modules/vm.bicep' = {
   }
 }
 
+module automationModule '../modules/automation.bicep' = if (deployAutomation) {
+  name: 'automationDeployment'
+  scope: coreRg
+  params: {
+    automationAccountName: automationAccountName
+    location: location
+    identityId: automationManagedIdentityModule!.outputs.id
+    identityPrincipalId: automationManagedIdentityModule!.outputs.principalId
+    runtimeVersion: automationRuntimeVersion
+    azPackageVersion: automationAzVersion
+    runbooks: automationRunbooks
+    vmStartScheduleEnabled: vmStartScheduleEnabled
+    vmStartScheduleName: vmStartScheduleName
+    vmStartScheduleStartTime: vmStartScheduleStartTime
+    vmStartScheduleTimeZone: vmStartScheduleTimeZone
+    vmResourceId: vmModule!.outputs.vmId
+    tags: effectiveTags
+  }
+}
+
+module actorRolesModule '../modules/actorroles.bicep' = if (!empty(effectiveAdminActors) || !empty(userActors)) {
+  name: 'actorRolesDeployment'
+  scope: coreRg
+  params: {
+    adminActors: effectiveAdminActors
+    userActors: userActors
+    keyVaultName: keyVaultName
+    openAiAccountName: openAiAccountName
+    storageAccountName: deployStorage ? storageAccountName : ''
+    hubName: deployAiFoundry ? hubName : ''
+    projectName: deployAiFoundry ? projectName : ''
+    vmName: deployVm ? vmName : ''
+    logAnalyticsWorkspaceName: deployLogAnalytics ? lawWorkspaceName : ''
+  }
+  dependsOn: [
+    keyVaultModule
+    openAiModule
+  ]
+}
+
+module networkRolesModule '../modules/networkroles.bicep' = if (!empty(effectiveAdminActors) || !empty(userActors)) {
+  name: 'networkRolesDeployment'
+  scope: networkRg
+  params: {
+    adminActors: effectiveAdminActors
+    userActors: userActors
+  }
+  dependsOn: [
+    networkModule
+  ]
+}
+
 output keyVaultUri string = keyVaultModule.outputs.vaultUri
 output openAiEndpoint string = openAiModule.outputs.endpoint
 output deploymentName string = openAiModule.outputs.deploymentName
 output secondaryDeploymentName string = openAiModule.outputs.secondaryDeploymentName
-output hubName string = aiHubModule.outputs.name
-output projectName string = aiProjectModule.outputs.name
+output hubName string = deployAiFoundry ? aiHubModule!.outputs.name : ''
+output projectName string = deployAiFoundry ? aiProjectModule!.outputs.name : ''
 output hubManagedIdentityId string = hubManagedIdentityModule.outputs.id
 output hubManagedIdentityPrincipalId string = hubManagedIdentityModule.outputs.principalId
 output hubManagedIdentityClientId string = hubManagedIdentityModule.outputs.clientId
 output vmManagedIdentityId string = vmManagedIdentityModule.outputs.id
 output vmManagedIdentityPrincipalId string = vmManagedIdentityModule.outputs.principalId
 output vmManagedIdentityClientId string = vmManagedIdentityModule.outputs.clientId
+output automationAccountName string = deployAutomation ? automationModule!.outputs.accountName : ''
+output automationManagedIdentityId string = deployAutomation ? automationManagedIdentityModule!.outputs.id : ''
+output automationManagedIdentityPrincipalId string = deployAutomation ? automationManagedIdentityModule!.outputs.principalId : ''
+output automationManagedIdentityClientId string = deployAutomation ? automationManagedIdentityModule!.outputs.clientId : ''
+output automationRunbookNames array = deployAutomation ? automationModule!.outputs.runbookNames : []
+output vmStartScheduleName string = deployAutomation ? automationModule!.outputs.scheduleName : ''
+output automationJobScheduleName string = deployAutomation ? automationModule!.outputs.jobScheduleName : ''
 output vnetId string = networkModule.outputs.id
-output vmName string = vmModule.outputs.vmName
+output vmName string = deployVm ? vmModule!.outputs.vmName : ''
 output vmPublicIpAddress string = networkModule.outputs.publicIpAddress
-output storageAccountName string = storageModule.outputs.name
-output logAnalyticsWorkspaceId string = lawModule.outputs.id
-output logAnalyticsWorkspaceName string = lawModule.outputs.name
+output vmPublicIpFqdn string = networkModule.outputs.publicIpFqdn
+output storageAccountName string = deployStorage ? storageModule!.outputs.name : ''
+output logAnalyticsWorkspaceId string = logAnalyticsWorkspaceResourceId
+output logAnalyticsWorkspaceName string = deployLogAnalytics ? lawModule!.outputs.name : ''

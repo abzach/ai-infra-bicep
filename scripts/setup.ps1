@@ -241,8 +241,10 @@ Install-BicepCli
 Install-AzurePowerShellModules
 
 try {
-    Set-TimeZone -Id 'India Standard Time'
-    Write-Log 'Timezone set to India Standard Time (IST, UTC+5:30).' -Color Green
+    # The guest time zone is supplied by deploy.ps1 from variables/core.yaml (vmGuestTimeZone).
+    $guestTimeZone = if (-not [string]::IsNullOrWhiteSpace($env:VM_GUEST_TIMEZONE)) { $env:VM_GUEST_TIMEZONE } else { 'UTC' }
+    Set-TimeZone -Id $guestTimeZone
+    Write-Log "Timezone set to $guestTimeZone." -Color Green
 } catch {
     Write-Log "Warning: could not set timezone: $($_.Exception.Message)" -Color DarkGray
 }

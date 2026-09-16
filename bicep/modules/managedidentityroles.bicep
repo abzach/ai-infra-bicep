@@ -9,6 +9,9 @@ param keyVaultName string
 @description('Azure OpenAI account name to grant Cognitive Services OpenAI User to the managed identity.')
 param openAiAccountName string
 
+@description('Grant the Storage Blob Data Contributor role. Set to false when the Storage account is not deployed.')
+param grantStorageRole bool = true
+
 @description('Principal ID of the managed identity assigned to the AI Hub.')
 param hubIdentityPrincipalId string
 
@@ -28,7 +31,7 @@ resource openAiAccount 'Microsoft.CognitiveServices/accounts@2024-10-01' existin
 }
 
 // The Hub manages AI project artifacts and needs read/write access to its backing storage.
-resource hubStorageBlobDataContributorRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+resource hubStorageBlobDataContributorRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (grantStorageRole) {
   name: guid(resourceGroup().id, storageAccount.id, hubIdentityPrincipalId, 'ba92f5b4-2d11-453d-a403-e96b0029c9fe')
   scope: storageAccount
   properties: {

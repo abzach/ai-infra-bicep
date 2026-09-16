@@ -38,8 +38,8 @@ param secondaryModelSkuName string = 'GlobalStandard'
 @minValue(1)
 param secondaryCapacityK int = 8
 
-@description('Log Analytics workspace resource ID used for diagnostics.')
-param logAnalyticsWorkspaceResourceId string
+@description('Log Analytics workspace resource ID used for diagnostics. Leave empty to skip diagnostic settings.')
+param logAnalyticsWorkspaceResourceId string = ''
 
 @description('Disable local authentication (API key access). Defaults to true to enforce Entra ID-only authentication.')
 param disableLocalAuth bool = true
@@ -65,7 +65,7 @@ resource openAiAccount 'Microsoft.CognitiveServices/accounts@2024-10-01' = {
   }
 }
 
-resource openAiDiagnostics 'Microsoft.Insights/diagnosticSettings@2021-05-01-preview' = {
+resource openAiDiagnostics 'Microsoft.Insights/diagnosticSettings@2021-05-01-preview' = if (!empty(logAnalyticsWorkspaceResourceId)) {
   name: 'send-to-law'
   scope: openAiAccount
   properties: {

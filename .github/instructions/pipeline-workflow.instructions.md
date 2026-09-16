@@ -16,3 +16,13 @@ applyTo: ".github/workflows/**/*.yml,pipelines/**/*.yml,variables/**/*.yaml"
 ## Keep this skill current
 
 If this task needed steps beyond what is listed above, add them to this file before finishing so future pipeline/workflow changes benefit.
+
+## Configuration in CI
+
+`variables/*.yaml` is untracked, so every CI step that loads configuration must receive
+`AI_INFRA_CORE_YAML` and `AI_INFRA_ENV_YAML`:
+
+- GitHub Actions: `env:` entries reading `secrets.AI_INFRA_CORE_YAML` and `secrets.AI_INFRA_ENV_YAML`.
+- Azure DevOps: task-level `env:` entries reading `$(aiInfraCoreYaml)` and `$(aiInfraEnvYaml)` from the `ai-infra-<environment>` variable group, which also provides `serviceConnection` and `vmAdminPassword`.
+
+Never reintroduce `- template: ../variables/<env>.yaml`; that file no longer exists in the repository.

@@ -57,6 +57,9 @@ $scriptRoot = Get-CurrentScriptRoot
 if ($Mode -eq 'Static') {
     . (Join-Path $scriptRoot 'common.ps1')
 
+    Initialize-ScriptLogging -ScriptRoot $scriptRoot -ScriptName 'test.ps1 (Static)'
+    trap { Write-LogEntry -Level 'ERROR' -Message "Unhandled error: $($_.Exception.Message)"; Write-ScriptTimingSummary -Status 'failed' }
+
     $env:AZURE_CORE_COLLECT_TELEMETRY = '0'
 
     $templatePath = Join-Path $scriptRoot '..\bicep\templates\main.bicep'
@@ -73,6 +76,37 @@ if ($Mode -eq 'Static') {
     $files += Get-ChildItem -Path $modulePath -Filter '*.bicep' | Select-Object -ExpandProperty FullName
 
     $passed = $true
+
+    $automationPath = Join-Path $scriptRoot '..\automation'
+    $automationFiles = @(Get-ChildItem -Path $automationPath -Filter '*.ps1' -File -ErrorAction Stop | Sort-Object Name)
+    if ($automationFiles.Count -eq 0) {
+        Write-Needed 'Fail: no top-level Automation runbooks were found'
+        $passed = $false
+    }
+    $runbookNames = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    foreach ($automationFile in $automationFiles) {
+        $runbookName = [System.IO.Path]::GetFileNameWithoutExtension($automationFile.Name)
+        if ($runbookName -notmatch '^[A-Za-z][A-Za-z0-9_-]*$' -or -not $runbookNames.Add($runbookName)) {
+            Write-Needed "Fail: invalid or duplicate Automation runbook name '$runbookName'"
+            $passed = $false
+        }
+
+        $tokens = $null
+        $parseErrors = $null
+        [void][System.Management.Automation.Language.Parser]::ParseFile($automationFile.FullName, [ref]$tokens, [ref]$parseErrors)
+        if ($parseErrors.Count -gt 0) {
+            Write-Needed "Fail: Automation runbook '$($automationFile.Name)' has parse errors"
+            $passed = $false
+        } else {
+            Write-Exists "Pass: Automation runbook '$($automationFile.Name)' parses successfully"
+        }
+
+        $source = Get-Content -LiteralPath $automationFile.FullName -Raw
+        if ($source -match 'Add-AzureRmAccount|RunAsConnection|Get-AutomationPSCredential|ClientSecret|ConvertTo-SecureString\s+[''"]') {
+            Write-Needed "Fail: Automation runbook '$($automationFile.Name)' contains legacy authentication or embedded credential patterns"
+            $passed = $false
+        }
+    }
 
     foreach ($templateFile in $files) {
         $fileName = Split-Path $templateFile -Leaf
@@ -104,8 +138,8 @@ if ($Mode -eq 'Static') {
         }
     }
 
-    if ($passed) { Write-Exists 'All static tests passed.'; exit 0 }
-    else { Write-Needed 'Some static tests failed.'; exit 1 }
+    if ($passed) { Write-Exists 'All static tests passed.'; Complete-ScriptLogging -Status 'completed (passed)'; exit 0 }
+    else { Write-Needed 'Some static tests failed.'; Complete-ScriptLogging -Status 'completed (failed)'; exit 1 }
 }
 
 if (-not $EnvironmentSuffix) {
@@ -115,6 +149,9 @@ if (-not $EnvironmentSuffix) {
 
 . (Join-Path $scriptRoot 'config.ps1')
 . (Join-Path $scriptRoot 'common.ps1')
+
+Initialize-ScriptLogging -ScriptRoot $scriptRoot -ScriptName "test.ps1 ($Mode)"
+trap { Write-LogEntry -Level 'ERROR' -Message "Unhandled error: $($_.Exception.Message)"; Write-ScriptTimingSummary -Status 'failed' }
 
 $subscriptionId = (az account show --query id --output tsv 2>$null).Trim()
 if ([string]::IsNullOrWhiteSpace($subscriptionId)) {
@@ -220,9 +257,17 @@ if ($Mode -eq 'Validate' -or $Mode -eq 'Smoke') {
     $projectName              = $config.projectName
     $hubManagedIdentityName   = $config.hubManagedIdentityName
     $vmManagedIdentityName    = $config.vmManagedIdentityName
+    $automationManagedIdentityName = $config.automationManagedIdentityName
+    $automationAccountName    = $config.automationAccountName
     $legacyManagedIdentityName = $config.legacyManagedIdentityName
     $vnetName                 = $config.vnetName
     $vmName                   = $config.vmName
+
+    # Component deployment flags decide which resources must exist; disabled components must be absent.
+    $deployStorageFlag      = $config.deployStorage -eq 'true'
+    $deployLogAnalyticsFlag = $config.deployLogAnalytics -eq 'true'
+    $deployAiFoundryFlag    = $config.deployAiFoundry -eq 'true'
+    $deployVmFlag           = $config.deployVm -eq 'true'
 
     $passed = $true
 
@@ -231,7 +276,10 @@ if ($Mode -eq 'Validate' -or $Mode -eq 'Smoke') {
     Write-Info "  Network RG : $NetworkResourceGroupName"
 
     $storage = az storage account show --name $storageAccountName --resource-group $CoreResourceGroupName --output json 2>$null | ConvertFrom-Json
-    if (-not $storage) {
+    if (-not $deployStorageFlag) {
+        if ($storage) { Write-Needed "Fail: deployStorage=false but storage account '$storageAccountName' still exists"; $passed = $false }
+        else { Write-Info 'Skip: deployStorage=false; storage account checks skipped.' }
+    } elseif (-not $storage) {
         Write-Needed "Fail: storage account '$storageAccountName' not found"
         $passed = $false
     } else {
@@ -300,12 +348,17 @@ if ($Mode -eq 'Validate' -or $Mode -eq 'Smoke') {
     }
 
     $hub = az resource show --name $hubName --resource-group $CoreResourceGroupName --resource-type Microsoft.MachineLearningServices/workspaces --output json 2>$null | ConvertFrom-Json
-    if (-not $hub) { Write-Needed "Fail: AI Hub '$hubName' not found"; $passed = $false }
-    else { Write-Exists "Pass: AI Hub '$hubName' exists" }
-
     $project = az resource show --name $projectName --resource-group $CoreResourceGroupName --resource-type Microsoft.MachineLearningServices/workspaces --output json 2>$null | ConvertFrom-Json
-    if (-not $project) { Write-Needed "Fail: AI Project '$projectName' not found"; $passed = $false }
-    else { Write-Exists "Pass: AI Project '$projectName' exists" }
+    if (-not $deployAiFoundryFlag) {
+        if ($hub -or $project) { Write-Needed 'Fail: deployAiFoundry=false but the AI Hub or AI Project still exists'; $passed = $false }
+        else { Write-Info 'Skip: deployAiFoundry=false; AI Hub and AI Project checks skipped.' }
+    } else {
+        if (-not $hub) { Write-Needed "Fail: AI Hub '$hubName' not found"; $passed = $false }
+        else { Write-Exists "Pass: AI Hub '$hubName' exists" }
+
+        if (-not $project) { Write-Needed "Fail: AI Project '$projectName' not found"; $passed = $false }
+        else { Write-Exists "Pass: AI Project '$projectName' exists" }
+    }
 
     $hubManagedIdentity = az identity show --name $hubManagedIdentityName --resource-group $CoreResourceGroupName --output json 2>$null | ConvertFrom-Json
     if (-not $hubManagedIdentity) { Write-Needed "Fail: AI Hub managed identity '$hubManagedIdentityName' not found"; $passed = $false }
@@ -314,6 +367,48 @@ if ($Mode -eq 'Validate' -or $Mode -eq 'Smoke') {
     $vmManagedIdentity = az identity show --name $vmManagedIdentityName --resource-group $CoreResourceGroupName --output json 2>$null | ConvertFrom-Json
     if (-not $vmManagedIdentity) { Write-Needed "Fail: VM managed identity '$vmManagedIdentityName' not found"; $passed = $false }
     else { Write-Exists "Pass: VM managed identity '$vmManagedIdentityName' exists" }
+
+    if ($config.deployAutomation -eq 'true') {
+        $automationManagedIdentity = az identity show --name $automationManagedIdentityName --resource-group $CoreResourceGroupName --output json 2>$null | ConvertFrom-Json
+        if (-not $automationManagedIdentity) {
+            Write-Needed "Fail: Automation managed identity '$automationManagedIdentityName' not found"; $passed = $false
+        } else {
+            Write-Exists "Pass: Automation managed identity '$automationManagedIdentityName' exists"
+        }
+
+        $automationAccountResourceUri = "https://management.azure.com/subscriptions/$subscriptionId/resourceGroups/$CoreResourceGroupName/providers/Microsoft.Automation/automationAccounts/$automationAccountName"
+        $automationAccountUri = "$automationAccountResourceUri`?api-version=2024-10-23"
+        $automationAccount = az rest --method get --url $automationAccountUri --output json 2>$null | ConvertFrom-Json
+        if (-not $automationAccount) {
+            Write-Needed "Fail: Automation Account '$automationAccountName' not found"; $passed = $false
+        } elseif ($automationAccount.identity.type -ne 'UserAssigned') {
+            Write-Needed "Fail: Automation Account '$automationAccountName' is not using only a user-assigned identity"; $passed = $false
+        } else {
+            Write-Exists "Pass: Automation Account '$automationAccountName' uses a user-assigned identity"
+        }
+
+        $automationPath = Join-Path $scriptRoot '..\automation'
+        foreach ($automationFile in @(Get-ChildItem -Path $automationPath -Filter '*.ps1' -File)) {
+            $runbookName = [System.IO.Path]::GetFileNameWithoutExtension($automationFile.Name)
+            $runbookUri = "$automationAccountResourceUri/runbooks/$runbookName`?api-version=2024-10-23"
+            $runbook = az rest --method get --url $runbookUri --output json 2>$null | ConvertFrom-Json
+            if (-not $runbook -or $runbook.properties.state -ne 'Published') {
+                Write-Needed "Fail: Automation runbook '$runbookName' is not published"; $passed = $false
+            } else {
+                Write-Exists "Pass: Automation runbook '$runbookName' is published"
+            }
+        }
+
+        if ($config.vmStartScheduleEnabled -eq 'true') {
+            $scheduleUri = "$automationAccountResourceUri/schedules/$($config.vmStartScheduleName)`?api-version=2024-10-23"
+            $schedule = az rest --method get --url $scheduleUri --output json 2>$null | ConvertFrom-Json
+            if (-not $schedule -or $schedule.properties.frequency -ne 'Day' -or $schedule.properties.timeZone -ne $config.vmStartScheduleTimeZone) {
+                Write-Needed "Fail: daily VM start schedule '$($config.vmStartScheduleName)' is missing or incorrect"; $passed = $false
+            } else {
+                Write-Exists "Pass: daily VM start schedule '$($config.vmStartScheduleName)' exists"
+            }
+        }
+    }
 
     $legacyManagedIdentity = az identity show --name $legacyManagedIdentityName --resource-group $CoreResourceGroupName --output json 2>$null | ConvertFrom-Json
     if ($legacyManagedIdentity) { Write-Needed "Fail: retired shared managed identity '$legacyManagedIdentityName' still exists"; $passed = $false }
@@ -350,7 +445,10 @@ if ($Mode -eq 'Validate' -or $Mode -eq 'Smoke') {
     }
 
     $vm = az vm show --name $vmName --resource-group $CoreResourceGroupName --show-details --output json 2>$null | ConvertFrom-Json
-    if (-not $vm) {
+    if (-not $deployVmFlag) {
+        if ($vm) { Write-Needed "Fail: deployVm=false but jumpbox VM '$vmName' still exists"; $passed = $false }
+        else { Write-Info 'Skip: deployVm=false; jumpbox VM checks skipped.' }
+    } elseif (-not $vm) {
         Write-Needed "Fail: jumpbox VM '$vmName' not found"; $passed = $false
     } else {
         $expectedImage = "$($config.vmImagePublisher):$($config.vmImageOffer):$($config.vmImageSku):$($config.vmImageVersion)"
@@ -622,7 +720,10 @@ Write-Host 'LAUNCHER_VALIDATION_OK'
     # ---- E1: Log Analytics workspace ----
     $lawWorkspaceName = $config.lawWorkspaceName
     $law = az monitor log-analytics workspace show --workspace-name $lawWorkspaceName --resource-group $CoreResourceGroupName --output json 2>$null | ConvertFrom-Json
-    if (-not $law) {
+    if (-not $deployLogAnalyticsFlag) {
+        if ($law) { Write-Needed "Fail: deployLogAnalytics=false but workspace '$lawWorkspaceName' still exists"; $passed = $false }
+        else { Write-Info 'Skip: deployLogAnalytics=false; Log Analytics checks skipped.' }
+    } elseif (-not $law) {
         Write-Needed "Fail: Log Analytics workspace '$lawWorkspaceName' not found"; $passed = $false
     } else {
         $expectedRetention = [int]$config.logAnalyticsRetentionDays
@@ -916,3 +1017,5 @@ Test-Model -DeploymentName $dep2 -Label "Secondary model"
         Write-Host $result
     }
 }
+
+Complete-ScriptLogging -Status 'completed'

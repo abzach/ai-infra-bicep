@@ -1,0 +1,46 @@
+# Development overrides. All unspecified values are inherited from core.yaml.
+#
+# Template for variables/dev.yaml. Copy this file to dev.yaml and edit
+# locally. Keep every environment-specific value here rather than in code or documentation.
+
+variables:
+  environmentSuffix: dev # Environment token used in names and tags; allowed value in this file: dev.
+  baseName: <REPLACE_WITH_SHORT_PREFIX> # Short lowercase naming prefix; 1-10 alphanumeric characters, kept short for the 24-character storage-name limit.
+
+  # ---- Component deployment flags (override core.yaml) -----------------------------------
+  # true  -> deployed and kept current. false -> removed by the next deploy.ps1 run.
+  # Key Vault, networking, Azure OpenAI, and the managed identities have no flag and are never removed.
+  deployStorage: true # Storage account, blob container, and blob private endpoint; allowed values: true, false. Must be true when deployAiFoundry is true.
+  deployLogAnalytics: true # Log Analytics workspace and resource diagnostics; allowed values: true, false. Must be true when enableAuditDiagnostics is true.
+  deployAiFoundry: true # AI Hub, AI Project, and hub private endpoint; allowed values: true, false.
+  deployVm: true # Jumpbox VM with NIC, public IP, NSG, OS disk, and auto-shutdown schedule; allowed values: true, false. Setting false also deletes the OS disk.
+  deployAutomation: true # Automation Account, its identity, and repository runbooks; allowed values: true, false. Must be false when deployVm is false.
+
+  skuName: Standard_LRS # Storage redundancy SKU; allowed values: Standard_LRS, Standard_GRS, Standard_ZRS.
+  modelSkuName: GlobalStandard # Primary model deployment SKU; commonly GlobalStandard, DataZoneStandard, or Standard when supported.
+  secondaryModelSkuName: GlobalStandard # Secondary model deployment SKU; must be supported by the selected model and region.
+  capacityK: 10 # Primary model throughput in thousands of tokens per minute; allowed value depends on model/SKU quota.
+  secondaryCapacityK: 8 # Secondary model throughput in thousands of tokens per minute; allowed value depends on model/SKU quota.
+
+  vmSize: Standard_L2as_v4 # Azure VM SKU; must be available in the configured location and support Spot because vmUseSpot is true.
+  vmImageSku: win11-24h2-ent-cpc-m365 # Marketplace image SKU used with the shared publisher, offer, and version.
+  vmOsDiskStorageAccountType: Standard_LRS # Managed OS disk SKU; allowed values: Standard_LRS, StandardSSD_LRS, Premium_LRS.
+  vmPublicIpDnsNameLabel: '' # Optional Public IP DNS label; empty disables public DNS, otherwise use 1-63 lowercase letters, numbers, or hyphens (for example az-swe-aifp).
+  vmUseSpot: true # Uses interruptible Spot capacity for lower cost; allowed values: true, false.
+
+  tagEnvironment: dev # Value for the environment resource tag; normally matches environmentSuffix.
+
+  # ---- Role-Based Access Control Actors --------------------------------------------------
+  # Supply array of Entra ID object IDs (users or security groups) for role assignments.
+  # admin gets highest permissions across data and control plane for all services.
+  # user gets operational, use, modification, and view permissions across all services.
+  # Leave empty [] to skip role assignments.
+  admin:
+    - objectId: '<REPLACE_WITH_ENTRA_OBJECT_ID>'
+      principalType: 'User' # Allowed values: User, Group, ServicePrincipal.
+  user: []
+
+  serviceConnection: '<REPLACE_WITH_SERVICE_CONNECTION_NAME>' # Azure DevOps service connection used by pipelines; ignored by local deploy.ps1.
+  githubAzureClientIdSecretName: AZURE_CLIENT_ID # GitHub secret name containing the OIDC application/client ID; change to values such as AZURE_CLIENT_ID_01 for per-environment credentials.
+  githubAzureTenantIdSecretName: AZURE_TENANT_ID # GitHub secret name containing the Microsoft Entra tenant ID; change to values such as AZURE_TENANT_ID_01 for per-environment credentials.
+  githubAzureSubscriptionIdSecretName: AZURE_SUBSCRIPTION_ID # GitHub secret name containing the Azure subscription ID; change to values such as AZURE_SUBSCRIPTION_ID_01 for per-environment credentials.

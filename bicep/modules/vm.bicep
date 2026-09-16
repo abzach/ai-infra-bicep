@@ -20,7 +20,7 @@ param adminUsername string = 'azureadmin'
 param adminPassword string
 
 @description('Azure VM size.')
-param vmSize string = 'Standard_L2as_v4'
+param vmSize string = 'Standard_D2s_v5'
 
 @description('Publisher of the Azure Marketplace VM image.')
 param imagePublisher string = 'microsoftwindowsdesktop'
@@ -29,7 +29,7 @@ param imagePublisher string = 'microsoftwindowsdesktop'
 param imageOffer string = 'windows-ent-cpc'
 
 @description('SKU of the Azure Marketplace VM image.')
-param imageSku string = 'win11-24h2-ent-cpc-m365'
+param imageSku string = 'win11-24h2-ent'
 
 @description('Version of the Azure Marketplace VM image.')
 param imageVersion string = 'latest'
@@ -61,7 +61,7 @@ param autoShutdownEnabled bool = true
 param autoShutdownTime string = '0300'
 
 @description('Timezone for auto-shutdown schedule.')
-param autoShutdownTimeZone string = 'India Standard Time'
+param autoShutdownTimeZone string = 'UTC'
 
 @description('Resource tags to apply.')
 param tags object = {}

@@ -26,6 +26,7 @@ Desktop.ini
 .azd/
 .azure/
 .local/
+.logs/
 *.clixml
 *.credentials.txt
 *.json
@@ -37,6 +38,13 @@ Desktop.ini
 temporary/
 *.log
 *.tmp
+
+# Machine-local configuration
+# variables/*.yaml holds user-specific configuration (subscription-scoped object IDs, naming,
+# regions, SKUs) and must never be committed. Only the *.yaml.example templates are tracked.
+# Any new configuration YAML added to this repository must follow the same rule.
+variables/*.yaml
+!variables/*.yaml.example
 
 # Machine-local documentation
 LOCAL.md

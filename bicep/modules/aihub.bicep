@@ -11,7 +11,6 @@ param storageAccountResourceId string
 
 @description('Key Vault resource ID used by AI Hub.')
 param keyVaultResourceId string
-
 @description('Azure OpenAI endpoint URL.')
 param openAiEndpoint string
 
@@ -21,8 +20,8 @@ param openAiResourceId string
 @description('User-managed identity resource ID.')
 param identityId string
 
-@description('Log Analytics workspace resource ID used for diagnostics.')
-param logAnalyticsWorkspaceResourceId string
+@description('Log Analytics workspace resource ID used for diagnostics. Leave empty to skip diagnostic settings.')
+param logAnalyticsWorkspaceResourceId string = ''
 
 @description('Resource tags to apply.')
 param tags object = {}
@@ -66,7 +65,7 @@ resource openAiConnection 'Microsoft.MachineLearningServices/workspaces/connecti
   }
 }
 
-resource aiHubDiagnostics 'Microsoft.Insights/diagnosticSettings@2021-05-01-preview' = {
+resource aiHubDiagnostics 'Microsoft.Insights/diagnosticSettings@2021-05-01-preview' = if (!empty(logAnalyticsWorkspaceResourceId)) {
   name: 'send-to-law'
   scope: aiHub
   properties: {

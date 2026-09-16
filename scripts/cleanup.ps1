@@ -46,6 +46,9 @@ $scriptRoot = Get-CurrentScriptRoot
 . (Join-Path $scriptRoot 'config.ps1')
 . (Join-Path $scriptRoot 'common.ps1')
 
+Initialize-ScriptLogging -ScriptRoot $scriptRoot -ScriptName 'cleanup.ps1'
+trap { Write-LogEntry -Level 'ERROR' -Message "Unhandled error: $($_.Exception.Message)"; Write-ScriptTimingSummary -Status 'failed' }
+
 function Add-UniqueResourceGroupName {
     param(
         [AllowEmptyCollection()]
@@ -136,11 +139,13 @@ Write-Info ''
 
 if ($WhatIf) {
     Write-Exists "WhatIf: no changes made."
+    Complete-ScriptLogging -Status 'completed (WhatIf)'
     exit 0
 }
 
 if ($existingResourceGroups.Count -eq 0) {
     Write-Exists 'Nothing to delete - all matching resource groups are already gone.'
+    Complete-ScriptLogging -Status 'completed (nothing to delete)'
     exit 0
 }
 
@@ -148,6 +153,7 @@ if (-not $Force) {
     $confirm = Read-Host "Type 'yes' to proceed with cleanup"
     if ($confirm -ne 'yes') {
         Write-Task "Cleanup cancelled."
+        Complete-ScriptLogging -Status 'cancelled'
         exit 0
     }
 } else {
@@ -185,3 +191,4 @@ foreach ($rg in $rgsToDelete) {
 Write-Info ''
 Write-Exists "Cleanup complete for '$EnvironmentSuffix'."
 Write-Info ''
+Complete-ScriptLogging -Status 'completed'

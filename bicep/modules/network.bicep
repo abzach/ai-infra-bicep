@@ -27,6 +27,12 @@ param rdpAllowedIpCidrs array = []
 @description('Enable accelerated networking on the VM network interface.')
 param acceleratedNetworkingEnabled bool = true
 
+@description('Deploy the VM-specific network resources (public IP, NSG, NIC). Set to false when the jumpbox VM is not deployed.')
+param deployVmNetworking bool = true
+
+@description('Optional DNS name label for the VM public IP. Leave empty to skip a public DNS name.')
+param publicIpDnsNameLabel string = ''
+
 var subnets = [
   {
     name: 'services'
@@ -142,7 +148,7 @@ var nicName      = '${vmName}-nic'
 var publicIpName = '${vmName}-pip'
 var nsgName      = '${vmName}-nsg'
 
-resource publicIp 'Microsoft.Network/publicIPAddresses@2024-01-01' = {
+resource publicIp 'Microsoft.Network/publicIPAddresses@2024-01-01' = if (deployVmNetworking && empty(publicIpDnsNameLabel)) {
   name: publicIpName
   location: location
   tags: tags
@@ -151,6 +157,21 @@ resource publicIp 'Microsoft.Network/publicIPAddresses@2024-01-01' = {
   }
   properties: {
     publicIPAllocationMethod: 'Static'
+  }
+}
+
+resource publicIpWithDns 'Microsoft.Network/publicIPAddresses@2024-01-01' = if (deployVmNetworking && !empty(publicIpDnsNameLabel)) {
+  name: publicIpName
+  location: location
+  tags: tags
+  sku: {
+    name: 'Standard'
+  }
+  properties: {
+    publicIPAllocationMethod: 'Static'
+    dnsSettings: {
+      domainNameLabel: publicIpDnsNameLabel
+    }
   }
 }
 
@@ -184,7 +205,7 @@ var rdpDenyRule = [
   }
 ]
 
-resource networkSecurityGroup 'Microsoft.Network/networkSecurityGroups@2024-01-01' = {
+resource networkSecurityGroup 'Microsoft.Network/networkSecurityGroups@2024-01-01' = if (deployVmNetworking) {
   name: nsgName
   location: location
   tags: tags
@@ -193,14 +214,14 @@ resource networkSecurityGroup 'Microsoft.Network/networkSecurityGroups@2024-01-0
   }
 }
 
-resource nic 'Microsoft.Network/networkInterfaces@2024-01-01' = {
+resource nic 'Microsoft.Network/networkInterfaces@2024-01-01' = if (deployVmNetworking) {
   name: nicName
   location: location
   tags: tags
   properties: {
     enableAcceleratedNetworking: acceleratedNetworkingEnabled
     networkSecurityGroup: {
-      id: networkSecurityGroup.id
+      id: networkSecurityGroup!.id
     }
     ipConfigurations: [
       {
@@ -210,7 +231,7 @@ resource nic 'Microsoft.Network/networkInterfaces@2024-01-01' = {
             id: vnet.properties.subnets[1].id
           }
           publicIPAddress: {
-            id: publicIp.id
+            id: empty(publicIpDnsNameLabel) ? publicIp!.id : publicIpWithDns!.id
           }
           privateIPAllocationMethod: 'Dynamic'
         }
@@ -227,7 +248,8 @@ output kvDnsZoneId string = kvDnsZone.id
 output oaiDnsZoneId string = oaiDnsZone.id
 output storageDnsZoneId string = storageDnsZone.id
 output amlApiDnsZoneId string = amlApiDnsZone.id
-output nicId string = nic.id
-output nicName string = nic.name
-output privateIp string = nic.properties.ipConfigurations[0].properties.privateIPAddress
-output publicIpAddress string = publicIp.properties.ipAddress
+output nicId string = deployVmNetworking ? nic!.id : ''
+output nicName string = deployVmNetworking ? nic!.name : ''
+output privateIp string = deployVmNetworking ? nic!.properties.ipConfigurations[0].properties.privateIPAddress : ''
+output publicIpAddress string = deployVmNetworking ? (empty(publicIpDnsNameLabel) ? publicIp!.properties.ipAddress : publicIpWithDns!.properties.ipAddress) : ''
+output publicIpFqdn string = deployVmNetworking && !empty(publicIpDnsNameLabel) ? publicIpWithDns!.properties.dnsSettings.fqdn : ''

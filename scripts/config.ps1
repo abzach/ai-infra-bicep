@@ -26,14 +26,15 @@ function Convert-ConfigScalar {
 #   every script uses the same deterministic naming scheme.
 #
 #   Parameters
-#     BaseName          Short workload prefix (e.g. "mstech", max 5-8 chars)
+#     BaseName          Short workload prefix (max 5-8 lowercase alphanumeric characters)
 #     EnvironmentSuffix Environment token: "dev" or "uat"
 #     NameSuffix        Optional 4-char subscription-derived suffix for global uniqueness
 #
 #   Returns a pscustomobject with properties:
 #     coreResourceGroupName, networkResourceGroupName, storageAccountName,
 #     keyVaultName, openAiAccountName, hubName, projectName,
-#     hubManagedIdentityName, vmManagedIdentityName, vnetName, vmName, lawWorkspaceName
+#     hubManagedIdentityName, vmManagedIdentityName, automationManagedIdentityName,
+#     automationAccountName, vnetName, vmName, lawWorkspaceName
 # ---------------------------------------------------------------------------
 function Get-EnterpriseResourceNames {
     param(
@@ -57,6 +58,9 @@ function Get-EnterpriseResourceNames {
         projectName              = "proj-${n}-${env}${sfx}"
         hubManagedIdentityName   = "mi-${n}-hub-${env}${sfx}"
         vmManagedIdentityName    = "mi-${n}-vm-${env}${sfx}"
+        automationManagedIdentityName = "mi-${n}-automation-${env}${sfx}"
+        automationAccountName    = "aa-${n}-${env}${sfx}"
+        vmStartScheduleName      = 'start-vm-daily'
         legacyManagedIdentityName = "mi-${n}-${env}${sfx}"
         vnetName                 = "vnet-${n}-${env}${sfx}"
         vmName                   = "vm-${n}-${env}${sfx}"
@@ -83,7 +87,7 @@ function Get-EnterpriseResourceNames {
 #                       (deploy.ps1 derives this from the first 4 hex chars of the subscription ID)
 #
 #   Returns a pscustomobject.  Example property access:
-#     $config.keyVaultName      → "kv-aistack3-dev-a1b2"
+#     $config.keyVaultName      → "kv-<baseName>-dev-a1b2"
 #     $config.openaiApiVersion  → "2025-01-01-preview"
 # ---------------------------------------------------------------------------
 function Read-EnterpriseEnvironmentConfig {
@@ -104,36 +108,217 @@ function Read-EnterpriseEnvironmentConfig {
         param([string]$YamlPath)
         $result = [ordered]@{}
         $inVariables = $false
-        foreach ($line in Get-Content $YamlPath) {
-            if ($line -match '^variables:') {
+        $currentKey = $null
+        $currentList = $null
+        $currentObj = $null
+
+        foreach ($rawLine in Get-Content $YamlPath) {
+            $line = $rawLine.TrimEnd()
+            $trimmed = $line.Trim()
+            if ($trimmed.StartsWith('#') -or $trimmed -eq '') { continue }
+
+            if ($line -match '^variables:\s*(#.*)?$') {
                 $inVariables = $true
                 continue
             }
-            if ($inVariables -and $line -match '^\s{2}(\w+):\s+(.+)$') {
-                $result[$Matches[1]] = Convert-ConfigScalar $Matches[2]
+            if (-not $inVariables) { continue }
+
+            # Top-level key: '  key: value' or '  key:'
+            if ($line -match '^\s{2}(\w+):\s*(.*)$') {
+                $key = $Matches[1]
+                $rest = $Matches[2].Trim()
+
+                $currentKey = $key
+                $currentList = $null
+                $currentObj = $null
+
+                if ($rest -ne '' -and $rest -notmatch '^#') {
+                    $restClean = $rest -replace '\s+#.*$', ''
+                    if ($restClean.StartsWith('[') -and $restClean.EndsWith(']')) {
+                        try {
+                            $jsonArray = $restClean | ConvertFrom-Json
+                            $result[$key] = $jsonArray
+                        } catch {
+                            $result[$key] = $restClean
+                        }
+                    } else {
+                        $result[$key] = Convert-ConfigScalar $restClean
+                    }
+                } else {
+                    $currentList = [System.Collections.Generic.List[object]]::new()
+                    $result[$key] = $currentList
+                }
+                continue
+            }
+
+            # List item: '    - ...'
+            if ($null -ne $currentKey -and $line -match '^\s{4}-\s*(.*)$') {
+                $itemRest = $Matches[1].Trim() -replace '\s+#.*$', ''
+                if ($null -eq $currentList) {
+                    $currentList = [System.Collections.Generic.List[object]]::new()
+                    $result[$currentKey] = $currentList
+                }
+
+                if ($itemRest -match '^(\w+):\s*(.*)$') {
+                    $currentObj = [ordered]@{}
+                    $propKey = $Matches[1]
+                    $propVal = Convert-ConfigScalar $Matches[2]
+                    $currentObj[$propKey] = $propVal
+                    $currentList.Add($currentObj)
+                } else {
+                    $currentObj = $null
+                    $scalarVal = Convert-ConfigScalar $itemRest
+                    if ($scalarVal -ne '') {
+                        $currentList.Add($scalarVal)
+                    }
+                }
+                continue
+            }
+
+            # Sub-property in object list: '      prop: val'
+            if ($null -ne $currentObj -and $line -match '^\s{6}(\w+):\s*(.*)$') {
+                $propKey = $Matches[1]
+                $propVal = Convert-ConfigScalar $Matches[2]
+                $currentObj[$propKey] = $propVal
+                continue
             }
         }
         return $result
     }
 
+    # ---- Helper: ensure a local (untracked) YAML file exists, seeding it from its .example ----
+    # variables/*.yaml holds user-specific configuration and is never committed. Only the
+    # matching *.yaml.example files are tracked, so a fresh clone has to seed them once.
+    # CI has no local file, so it supplies the full YAML content through an environment
+    # variable (a secret or variable group), which is written to disk for this run only.
+    $ensureLocalYaml = {
+        param([string]$YamlPath, [string]$Description, [string]$ContentEnvVarName)
+
+        if (Test-Path -LiteralPath $YamlPath -PathType Leaf) {
+            return
+        }
+
+        $suppliedContent = [System.Environment]::GetEnvironmentVariable($ContentEnvVarName)
+        if (-not [string]::IsNullOrWhiteSpace($suppliedContent)) {
+            $yamlDirectory = Split-Path -Parent $YamlPath
+            if (-not (Test-Path -LiteralPath $yamlDirectory)) {
+                New-Item -ItemType Directory -Path $yamlDirectory -Force | Out-Null
+            }
+            Set-Content -LiteralPath $YamlPath -Value $suppliedContent -Encoding utf8NoBOM
+            return
+        }
+
+        $examplePath = "$YamlPath.example"
+        if (-not (Test-Path -LiteralPath $examplePath -PathType Leaf)) {
+            throw "$Description not found: $YamlPath (and no $examplePath to seed it from)."
+        }
+
+        Copy-Item -LiteralPath $examplePath -Destination $YamlPath -Force
+        throw @"
+$Description was missing, so it was created from '$([System.IO.Path]::GetFileName($examplePath))'.
+
+Open '$YamlPath', replace every <REPLACE_WITH_...> placeholder with your own values, and rerun.
+Files under variables/ are intentionally untracked: never commit your configuration.
+In CI, supply the full file content through the '$ContentEnvVarName' environment variable instead.
+"@
+    }
+
     # ---- Layer 1: shared values (common across all environments) ----
     $sharedYamlPath = Join-Path $resolvedScriptRoot "..\variables\core.yaml"
-    if (-not (Test-Path $sharedYamlPath)) {
-        throw "Core variables file not found: $sharedYamlPath"
-    }
+    & $ensureLocalYaml $sharedYamlPath 'Core variables file' 'AI_INFRA_CORE_YAML'
     $config = & $parseYaml $sharedYamlPath
 
     # ---- Layer 2: environment-specific overrides (wins on collision) ----
     $envYamlPath = Join-Path $resolvedScriptRoot "..\variables\$EnvironmentSuffix.yaml"
-    if (-not (Test-Path $envYamlPath)) {
-        throw "Environment variables file not found: $envYamlPath"
-    }
+    & $ensureLocalYaml $envYamlPath "Environment variables file for '$EnvironmentSuffix'" 'AI_INFRA_ENV_YAML'
     $envConfig = & $parseYaml $envYamlPath
     if ($envConfig.Contains('environmentSuffix') -and $envConfig['environmentSuffix'] -ne $EnvironmentSuffix) {
         throw "environmentSuffix '$($envConfig['environmentSuffix'])' in $envYamlPath must match '$EnvironmentSuffix'"
     }
     foreach ($key in $envConfig.Keys) {
         $config[$key] = $envConfig[$key]   # env layer wins on collision
+    }
+
+    if (-not $config.Contains('vmPublicIpDnsNameLabel')) {
+        $config['vmPublicIpDnsNameLabel'] = ''
+    }
+
+    # ---- Helper: normalize actor inputs (users/admins) into structured objects ----
+    $normalizeActorArray = {
+        param(
+            [AllowNull()] [object] $RawValue,
+            [Parameter(Mandatory)] [string] $ActorRoleName
+        )
+
+        $actors = [System.Collections.Generic.List[pscustomobject]]::new()
+        if ($null -eq $RawValue) {
+            return @($actors)
+        }
+
+        $items = @()
+        if ($RawValue -is [string]) {
+            $trimmed = $RawValue.Trim()
+            if ([string]::IsNullOrWhiteSpace($trimmed) -or $trimmed -eq '[]') {
+                return @($actors)
+            }
+            if ($trimmed.StartsWith('[') -and $trimmed.EndsWith(']')) {
+                try {
+                    $items = @($trimmed | ConvertFrom-Json)
+                } catch {
+                    $items = @($trimmed.Trim('[]') -split ',' | ForEach-Object { $_.Trim().Trim("'`"") })
+                }
+            } else {
+                $items = @($trimmed -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' })
+            }
+        } elseif ($RawValue -is [System.Collections.IEnumerable] -and -not ($RawValue -is [string])) {
+            $items = @($RawValue)
+        } else {
+            $items = @($RawValue)
+        }
+
+        foreach ($item in $items) {
+            if ($null -eq $item) { continue }
+            $objectId = ''
+            $principalType = 'User'
+
+            if ($item -is [string]) {
+                $objectId = $item.Trim().Trim("'`"")
+            } elseif ($item -is [System.Collections.IDictionary]) {
+                $objectId = if ($item.Contains('objectId')) { [string]$item['objectId'] } elseif ($item.Contains('id')) { [string]$item['id'] } else { '' }
+                if ($item.Contains('principalType') -and -not [string]::IsNullOrWhiteSpace([string]$item['principalType'])) {
+                    $principalType = [string]$item['principalType']
+                } elseif ($item.Contains('type') -and -not [string]::IsNullOrWhiteSpace([string]$item['type'])) {
+                    $principalType = [string]$item['type']
+                }
+            } elseif ($item -is [pscustomobject]) {
+                $objectId = if ($item.PSObject.Properties['objectId']) { [string]$item.objectId } elseif ($item.PSObject.Properties['id']) { [string]$item.id } else { '' }
+                if ($item.PSObject.Properties['principalType'] -and -not [string]::IsNullOrWhiteSpace([string]$item.principalType)) {
+                    $principalType = [string]$item.principalType
+                } elseif ($item.PSObject.Properties['type'] -and -not [string]::IsNullOrWhiteSpace([string]$item.type)) {
+                    $principalType = [string]$item.type
+                }
+            }
+
+            $objectId = $objectId.Trim()
+            if ([string]::IsNullOrWhiteSpace($objectId) -or $objectId.StartsWith('<REPLACE')) {
+                continue
+            }
+
+            if ($objectId -notmatch '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$') {
+                throw "$ActorRoleName actor contains '$objectId', which is not a valid Entra GUID."
+            }
+
+            if ($principalType -notin @('User', 'Group', 'ServicePrincipal')) {
+                throw "$ActorRoleName actor '$objectId' has invalid principalType '$principalType'. Allowed values: User, Group, ServicePrincipal."
+            }
+
+            $actors.Add([pscustomobject]@{
+                objectId = $objectId
+                principalType = $principalType
+            })
+        }
+
+        return @($actors)
     }
 
     # ---- Validate all required keys are present in the merged config ----
@@ -174,12 +359,25 @@ function Read-EnterpriseEnvironmentConfig {
         'vmAutoShutdownEnabled',
         'vmAutoShutdownTime',
         'vmAutoShutdownTimeZone',
+        'vmGuestTimeZone',
+        'deployStorage',
+        'deployLogAnalytics',
+        'deployAiFoundry',
+        'deployVm',
+        'deployAutomation',
+        'automationRuntimeVersion',
+        'automationAzVersion',
+        'vmStartScheduleEnabled',
+        'vmStartScheduleTime',
+        'vmStartScheduleTimeZone',
         'privateAiWorkspacesOnly',
         'enableAuditDiagnostics',
         'logAnalyticsRetentionDays',
         'logAnalyticsDailyQuotaGb',
-        'adminObjectIds',
-        'serviceConnection'
+        'serviceConnection',
+        'githubAzureClientIdSecretName',
+        'githubAzureTenantIdSecretName',
+        'githubAzureSubscriptionIdSecretName'
     )
 
     $missingKeys = [System.Collections.Generic.List[string]]::new()
@@ -192,6 +390,19 @@ function Read-EnterpriseEnvironmentConfig {
     if ($missingKeys.Count -gt 0) {
         throw "Missing required values after merging core.yaml + ${EnvironmentSuffix}.yaml: $($missingKeys -join ', ')"
     }
+
+    # ---- Normalize admin and user actor arrays ----
+    $rawAdmin = if ($config.Contains('admin')) { $config['admin'] } elseif ($config.Contains('admins')) { $config['admins'] } elseif ($config.Contains('adminObjectIds')) { $config['adminObjectIds'] } else { $null }
+    $rawUser = if ($config.Contains('user')) { $config['user'] } elseif ($config.Contains('users')) { $config['users'] } elseif ($config.Contains('userObjectIds')) { $config['userObjectIds'] } else { $null }
+
+    $adminActors = & $normalizeActorArray $rawAdmin 'admin'
+    $userActors = & $normalizeActorArray $rawUser 'user'
+
+    $config['admin'] = $adminActors
+    $config['user'] = $userActors
+    $config['adminActors'] = $adminActors
+    $config['userActors'] = $userActors
+    $config['adminObjectIds'] = ($adminActors | ForEach-Object { $_.objectId }) -join ','
 
     # ---- Validate integer fields ----
     $integerKeys = @(
@@ -232,10 +443,28 @@ function Read-EnterpriseEnvironmentConfig {
         }
     }
 
+    foreach ($key in @('githubAzureClientIdSecretName', 'githubAzureTenantIdSecretName', 'githubAzureSubscriptionIdSecretName')) {
+        if ([string]$config[$key] -notmatch '^[A-Za-z_][A-Za-z0-9_]*$') {
+            throw "Invalid GitHub secret name '$($config[$key])' for '$key'. Use letters, numbers, and underscores, starting with a letter or underscore."
+        }
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace([string]$config['vmPublicIpDnsNameLabel'])) {
+        if ([string]$config['vmPublicIpDnsNameLabel'] -notmatch '^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$') {
+            throw "Invalid DNS name label '$($config['vmPublicIpDnsNameLabel'])' for 'vmPublicIpDnsNameLabel'. Use 1-63 lowercase letters, numbers, or hyphens, starting and ending with a letter or number."
+        }
+    }
+
     $booleanKeys = @(
         'vmAcceleratedNetworking',
         'vmUseSpot',
         'vmAutoShutdownEnabled',
+        'deployStorage',
+        'deployLogAnalytics',
+        'deployAiFoundry',
+        'deployVm',
+        'deployAutomation',
+        'vmStartScheduleEnabled',
         'privateAiWorkspacesOnly',
         'enableAuditDiagnostics'
     )
@@ -243,6 +472,27 @@ function Read-EnterpriseEnvironmentConfig {
         if ([string]$config[$key] -notin @('true', 'false')) {
             throw "Invalid boolean value '$($config[$key])' for '$key'. Allowed values: true, false"
         }
+    }
+
+    # ---- Validate deployment-flag dependencies ----
+    # Key Vault, the virtual network, Azure OpenAI, and the managed identities have no flag:
+    # they hold deployment state or are required by every other component, so they are never removed.
+    $isFlagEnabled = { param([string]$Key) [string]$config[$Key] -eq 'true' }
+
+    if ((& $isFlagEnabled 'deployAiFoundry') -and -not (& $isFlagEnabled 'deployStorage')) {
+        throw "deployAiFoundry requires deployStorage because the AI Hub workspace needs a backing Storage account."
+    }
+    if ((& $isFlagEnabled 'enableAuditDiagnostics') -and -not (& $isFlagEnabled 'deployLogAnalytics')) {
+        throw "enableAuditDiagnostics requires deployLogAnalytics because diagnostics need a workspace destination."
+    }
+    if ((& $isFlagEnabled 'deployAutomation') -and -not (& $isFlagEnabled 'deployVm')) {
+        throw "deployAutomation requires deployVm because the start-vm runbook is scoped to the jumpbox VM."
+    }
+    if ((& $isFlagEnabled 'vmStartScheduleEnabled') -and -not (& $isFlagEnabled 'deployAutomation')) {
+        throw "vmStartScheduleEnabled requires deployAutomation because the schedule lives in the Automation Account."
+    }
+    if ((& $isFlagEnabled 'vmAutoShutdownEnabled') -and -not (& $isFlagEnabled 'deployVm')) {
+        throw "vmAutoShutdownEnabled requires deployVm because the schedule targets the jumpbox VM."
     }
 
     if ([int]$config['storageBlobSoftDeleteRetentionDays'] -lt 0 -or [int]$config['storageBlobSoftDeleteRetentionDays'] -gt 365) {
@@ -268,6 +518,15 @@ function Read-EnterpriseEnvironmentConfig {
     }
     if ([string]$config['vmAutoShutdownTime'] -notmatch '^([01]\d|2[0-3])[0-5]\d$') {
         throw "vmAutoShutdownTime must use 24-hour HHmm format"
+    }
+    if ([string]$config['vmStartScheduleTime'] -notmatch '^([01]\d|2[0-3])[0-5]\d$') {
+        throw "vmStartScheduleTime must use 24-hour HHmm format"
+    }
+    if ([string]$config['automationRuntimeVersion'] -ne '7.4') {
+        throw "automationRuntimeVersion must be 7.4"
+    }
+    if ([string]$config['automationAzVersion'] -notmatch '^\d+\.\d+\.\d+$') {
+        throw "automationAzVersion must use semantic version format"
     }
 
     # ---- Inject environmentSuffix into the result ----

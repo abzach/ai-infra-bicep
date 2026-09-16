@@ -1,6 +1,10 @@
-﻿# Azure AI Foundry Project
+# Azure AI Foundry Project
 
 This document details the configuration and architecture for the child Azure AI Foundry Project provisioned by `bicep/modules/aiproject.bicep`.
+
+## Deployment flag
+
+This component is controlled by `deployAiFoundry` in your environment YAML, together with the parent AI Hub. When set to `false`, the project is removed before the hub.
 
 ## Resource Overview
 

@@ -24,15 +24,37 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v6
 
+      - name: Resolve Azure login secret names
+        id: azure-login-secrets
+        shell: pwsh
+        env:
+          AI_INFRA_ENV_YAML: ${{ secrets.AI_INFRA_ENV_YAML }}
+        run: |
+          $required = [ordered]@{
+            githubAzureClientIdSecretName = 'clientIdSecretName'
+            githubAzureTenantIdSecretName = 'tenantIdSecretName'
+            githubAzureSubscriptionIdSecretName = 'subscriptionIdSecretName'
+          }
+          foreach ($entry in $required.GetEnumerator()) {
+            $match = [regex]::Match($env:AI_INFRA_ENV_YAML, "(?m)^\s{2}$($entry.Key)\s*:\s*['`"]?([A-Za-z_][A-Za-z0-9_]*)['`"]?\s*(?:#.*)?$")
+            if (-not $match.Success) {
+              throw "Missing or invalid '$($entry.Key)' in AI_INFRA_ENV_YAML. Set it to the GitHub secret name used for Azure OIDC login."
+            }
+            Add-Content -Path $env:GITHUB_OUTPUT -Value "$($entry.Value)=$($match.Groups[1].Value)"
+          }
+
       - name: Azure Login
         uses: azure/login@v3
         with:
-          client-id: ${{ secrets.AZURE_CLIENT_ID }}
-          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          client-id: ${{ secrets[steps.azure-login-secrets.outputs.clientIdSecretName] }}
+          tenant-id: ${{ secrets[steps.azure-login-secrets.outputs.tenantIdSecretName] }}
+          subscription-id: ${{ secrets[steps.azure-login-secrets.outputs.subscriptionIdSecretName] }}
 
       - name: Planning deployment
         shell: pwsh
+        env:
+          AI_INFRA_CORE_YAML: ${{ secrets.AI_INFRA_CORE_YAML }}
+          AI_INFRA_ENV_YAML: ${{ secrets.AI_INFRA_ENV_YAML }}
         run: ./scripts/deploy.ps1 -EnvironmentSuffix ${{ inputs.environment }} -WhatIf
 
   deploy:
@@ -43,17 +65,38 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v6
 
+      - name: Resolve Azure login secret names
+        id: azure-login-secrets
+        shell: pwsh
+        env:
+          AI_INFRA_ENV_YAML: ${{ secrets.AI_INFRA_ENV_YAML }}
+        run: |
+          $required = [ordered]@{
+            githubAzureClientIdSecretName = 'clientIdSecretName'
+            githubAzureTenantIdSecretName = 'tenantIdSecretName'
+            githubAzureSubscriptionIdSecretName = 'subscriptionIdSecretName'
+          }
+          foreach ($entry in $required.GetEnumerator()) {
+            $match = [regex]::Match($env:AI_INFRA_ENV_YAML, "(?m)^\s{2}$($entry.Key)\s*:\s*['`"]?([A-Za-z_][A-Za-z0-9_]*)['`"]?\s*(?:#.*)?$")
+            if (-not $match.Success) {
+              throw "Missing or invalid '$($entry.Key)' in AI_INFRA_ENV_YAML. Set it to the GitHub secret name used for Azure OIDC login."
+            }
+            Add-Content -Path $env:GITHUB_OUTPUT -Value "$($entry.Value)=$($match.Groups[1].Value)"
+          }
+
       - name: Azure Login
         uses: azure/login@v3
         with:
-          client-id: ${{ secrets.AZURE_CLIENT_ID }}
-          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          client-id: ${{ secrets[steps.azure-login-secrets.outputs.clientIdSecretName] }}
+          tenant-id: ${{ secrets[steps.azure-login-secrets.outputs.tenantIdSecretName] }}
+          subscription-id: ${{ secrets[steps.azure-login-secrets.outputs.subscriptionIdSecretName] }}
 
       - name: Deploying resources
         shell: pwsh
         env:
           VM_ADMIN_PASSWORD: ${{ secrets.VM_ADMIN_PASSWORD }}
+          AI_INFRA_CORE_YAML: ${{ secrets.AI_INFRA_CORE_YAML }}
+          AI_INFRA_ENV_YAML: ${{ secrets.AI_INFRA_ENV_YAML }}
         run: ./scripts/deploy.ps1 -EnvironmentSuffix ${{ inputs.environment }} -VmAdminPassword $env:VM_ADMIN_PASSWORD
 
   validate:
@@ -64,14 +107,35 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v6
 
+      - name: Resolve Azure login secret names
+        id: azure-login-secrets
+        shell: pwsh
+        env:
+          AI_INFRA_ENV_YAML: ${{ secrets.AI_INFRA_ENV_YAML }}
+        run: |
+          $required = [ordered]@{
+            githubAzureClientIdSecretName = 'clientIdSecretName'
+            githubAzureTenantIdSecretName = 'tenantIdSecretName'
+            githubAzureSubscriptionIdSecretName = 'subscriptionIdSecretName'
+          }
+          foreach ($entry in $required.GetEnumerator()) {
+            $match = [regex]::Match($env:AI_INFRA_ENV_YAML, "(?m)^\s{2}$($entry.Key)\s*:\s*['`"]?([A-Za-z_][A-Za-z0-9_]*)['`"]?\s*(?:#.*)?$")
+            if (-not $match.Success) {
+              throw "Missing or invalid '$($entry.Key)' in AI_INFRA_ENV_YAML. Set it to the GitHub secret name used for Azure OIDC login."
+            }
+            Add-Content -Path $env:GITHUB_OUTPUT -Value "$($entry.Value)=$($match.Groups[1].Value)"
+          }
+
       - name: Azure Login
         uses: azure/login@v3
         with:
-          client-id: ${{ secrets.AZURE_CLIENT_ID }}
-          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          client-id: ${{ secrets[steps.azure-login-secrets.outputs.clientIdSecretName] }}
+          tenant-id: ${{ secrets[steps.azure-login-secrets.outputs.tenantIdSecretName] }}
+          subscription-id: ${{ secrets[steps.azure-login-secrets.outputs.subscriptionIdSecretName] }}
 
       - name: Validating deployment
-        continue-on-error: true
         shell: pwsh
+        env:
+          AI_INFRA_CORE_YAML: ${{ secrets.AI_INFRA_CORE_YAML }}
+          AI_INFRA_ENV_YAML: ${{ secrets.AI_INFRA_ENV_YAML }}
         run: ./scripts/test.ps1 -Mode Validate -EnvironmentSuffix ${{ inputs.environment }}

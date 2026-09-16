@@ -1,6 +1,10 @@
-﻿# Azure Storage Account
+# Azure Storage Account
 
 This document covers the configuration, security controls, and blob services for the storage account provisioned by `bicep/modules/storageaccount.bicep`.
+
+## Deployment flag
+
+This component is controlled by `deployStorage` in your environment YAML. When set to `false`, the next `scripts/deploy.ps1` run removes the blob private endpoint and then the storage account. `deployAiFoundry` requires `deployStorage` because the AI Hub needs a backing storage account.
 
 ## Resource Overview
 

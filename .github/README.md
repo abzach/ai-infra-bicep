@@ -1,13 +1,14 @@
 ﻿# GitHub automation
 
-GitHub Actions definitions for manual development deployment and cleanup.
+GitHub Actions definitions for automated CI testing, development deployment, and cleanup.
 
-- Deploy uses OIDC login, runs a non-mutating Bicep preview, deploys the selected environment (`dev`/`uat`), and validates resources.
+- CI tests (`ci.yml`) automatically run on push to `main` and PRs: static analysis, Bicep build and lint, IaC security scan, AI safety & prompt injection scanner, and Python syntax checks.
+- Deploy uses OIDC login secret names configured in the selected environment YAML, runs a non-mutating Bicep preview, deploys the selected environment (`dev`/`uat`), and validates resources.
 - Repository Copilot skill guidance lives in `copilot-instructions.md`, `copilot-skills-plan.md`, and path-specific files under `instructions/`.
 - Architecture and security documentation lives in the [`docs/`](../docs/README.md) catalog.
 - The official Bicep MCP server is registered in [`.mcp.json`](../.mcp.json) and [`.vscode/mcp.json`](../.vscode/mcp.json); see `instructions/bicep-mcp-server.instructions.md` for which Bicep tasks should use it.
-- Cleanup previews deletion before invoking the guarded cleanup script for the selected environment.
-- Configure repository secrets `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID`, and `VM_ADMIN_PASSWORD`.
+- Cleanup resolves OIDC login secret names from the selected environment YAML, previews deletion, then invokes the guarded cleanup script for that environment.
+- Configure repository secrets named by `githubAzureClientIdSecretName`, `githubAzureTenantIdSecretName`, and `githubAzureSubscriptionIdSecretName` in `variables/<env>.yaml`; the default names are `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, and `AZURE_SUBSCRIPTION_ID`. Also configure `VM_ADMIN_PASSWORD`.
 - The federated identity needs deployment permissions described in the root [README](../README.md).
 - VM passwords are not printed in CI. The deployment workflow supplies `VM_ADMIN_PASSWORD` to `-VmAdminPassword`; retrieve and rotate it through your secret-management process.
 
