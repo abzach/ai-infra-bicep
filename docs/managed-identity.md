@@ -1,4 +1,4 @@
-﻿# User-Assigned Managed Identities
+# User-Assigned Managed Identities
 
 This document covers the user-assigned managed identities deployed by `bicep/modules/managedidentity.bicep`.
 
@@ -40,7 +40,7 @@ The enterprise stack provisions three dedicated User-Assigned Managed Identities
 
 - **Jumpbox VM:** The VM has both System-Assigned and User-Assigned identities attached. The Python Chat App explicitly sets `AZURE_CLIENT_ID` in its `.env` pointing to the VM User-Assigned Identity's Client ID. `DefaultAzureCredential` uses this Client ID to request access tokens directly for `https://cognitiveservices.azure.com/.default`.
 - **AI Hub:** The AI Hub workspace references `hubManagedIdentityId` as its `primaryUserAssignedIdentity`, allowing the Hub to access backing Key Vault and Storage resources securely without credentials.
-- **Automation Account:** The `start-vm` runbook receives the Automation identity client ID as a schedule parameter and passes it to `Connect-AzAccount -Identity -AccountId`, avoiding ambiguity when selecting an Azure identity.
+- **Automation Account:** The `schedule-vm-start` runbook receives the Automation identity client ID as a schedule parameter and passes it to `Connect-AzAccount -Identity -AccountId`, avoiding ambiguity when selecting an Azure identity.
 
 ## Related Documentation
 

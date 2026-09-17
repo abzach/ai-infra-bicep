@@ -24,7 +24,7 @@ This repository registers the official Bicep MCP server (`Azure.Bicep.McpServer`
 
 - The server is already registered for this workspace; no extra setup should be required. If the `bicep` MCP tools are unavailable, confirm `dnx` and a .NET 10+ SDK are on `PATH` before falling back to manual `az bicep` commands.
 - Prefer the MCP tools over manual guesses for resource schemas, API versions, and formatting; they reduce the risk of inventing property names that do not exist for a given API version.
-- The MCP tools do not deploy or execute the template and are not a substitute for validation. Still run `.\scripts\test.ps1 -Mode Static` and `.\scripts\security-scan.ps1`, and use `-WhatIf` for any change destined for a live environment.
+- The MCP tools do not deploy or execute the template and are not a substitute for validation. Still run `.\scripts\test.ps1 -Mode Static` and `.\scripts\scan.ps1`, and use `-WhatIf` for any change destined for a live environment.
 
 ## Keep this skill current
 

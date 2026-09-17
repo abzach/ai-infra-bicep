@@ -60,7 +60,7 @@ function Get-EnterpriseResourceNames {
         vmManagedIdentityName    = "mi-${n}-vm-${env}${sfx}"
         automationManagedIdentityName = "mi-${n}-automation-${env}${sfx}"
         automationAccountName    = "aa-${n}-${env}${sfx}"
-        vmStartScheduleName      = 'start-vm-daily'
+        vmStartScheduleName      = 'schedule-vm-start-daily'
         rdpDeployerCleanupScheduleName = 'delete-rdp-deployer-weekly'
         legacyManagedIdentityName = "mi-${n}-${env}${sfx}"
         vnetName                 = "vnet-${n}-${env}${sfx}"
@@ -571,7 +571,7 @@ In CI, supply the full file content through the '$ContentEnvVarName' environment
         throw "enableAuditDiagnostics requires deployLogAnalytics because diagnostics need a workspace destination."
     }
     if ((& $isFlagEnabled 'deployAutomation') -and -not (& $isFlagEnabled 'deployVm')) {
-        throw "deployAutomation requires deployVm because the start-vm runbook is scoped to the jumpbox VM."
+        throw "deployAutomation requires deployVm because the schedule-vm-start runbook is scoped to the jumpbox VM."
     }
     if ((& $isFlagEnabled 'vmStartScheduleEnabled') -and -not (& $isFlagEnabled 'deployAutomation')) {
         throw "vmStartScheduleEnabled requires deployAutomation because the schedule lives in the Automation Account."

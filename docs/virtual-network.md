@@ -1,4 +1,4 @@
-﻿# Virtual Network & Networking Infrastructure
+# Virtual Network & Networking Infrastructure
 
 This document details the private networking topology defined in `bicep/modules/network.bicep`.
 
@@ -42,7 +42,7 @@ The module creates four core Private DNS zones in the global location and links 
 
 ## Security Invariants
 
-1. **Deny-All RDP Perimeter:** Inbound RDP (`3389`) is blocked by default with priority `4096`. Inbound rules are only created for specific IP ranges detected or configured at deploy time, or added later with `scripts/add-rdp-allow-rule.ps1`.
+1. **Deny-All RDP Perimeter:** Inbound RDP (`3389`) is blocked by default with priority `4096`. Inbound rules are only created for specific IP ranges detected or configured at deploy time, or added later with `scripts/rdp.ps1`.
 2. **Private Link DNS Integration:** All PaaS service endpoints resolve to internal private IP addresses on the `services` subnet (`10.0.1.0/24`), preventing data-plane traffic from leaving Azure's private backbone.
 
 ## Related Documentation

@@ -1,4 +1,4 @@
-﻿# Azure DevOps Pipelines
+# Azure DevOps Pipelines
 
 This document details the consolidated Azure DevOps YAML pipelines in `pipelines/`.
 
@@ -21,7 +21,7 @@ The repository provides two unified multi-stage Azure DevOps pipelines featuring
 ```
  ┌──────────────────────┐
  │   1. Security Gate   │  Build & lint Bicep (test.ps1 -Mode Static)
- └──────────┬───────────┘  Scan IaC template (security-scan.ps1)
+ └──────────┬───────────┘  Scan IaC template (scan.ps1)
             │
  ┌──────────▼───────────┐
  │   2. Planning Phase  │  Non-mutating ARM What-If preview (deploy.ps1 -WhatIf)
@@ -40,7 +40,7 @@ The repository provides two unified multi-stage Azure DevOps pipelines featuring
 
 | Stage | Job Name | Tasks / Steps | Parameters / Arguments |
 |---|---|---|---|
-| **Security** | `StaticSecurityChecks` | `PowerShell@2` (Bicep build/lint), `PowerShell@2` (Security scan) | `-Mode Static`, `scripts/security-scan.ps1` |
+| **Security** | `StaticSecurityChecks` | `PowerShell@2` (Bicep build/lint), `PowerShell@2` (Security scan) | `-Mode Static`, `scripts/scan.ps1` |
 | **Planning** | `WhatIf` | `AzureCLI@2` | `-EnvironmentSuffix ${{ parameters.environment }} -WhatIf` |
 | **Deploy** | `Deploy` | `AzureCLI@2` | `-EnvironmentSuffix ${{ parameters.environment }} -VmAdminPassword $env:VM_ADMIN_PASSWORD` |
 | **Validate** | `PostDeployTests` | `AzureCLI@2` | `-Mode Validate -EnvironmentSuffix ${{ parameters.environment }}` |

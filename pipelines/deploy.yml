@@ -1,4 +1,4 @@
-﻿parameters:
+parameters:
   - name: environment
     displayName: Environment
     type: string
@@ -39,7 +39,7 @@ stages:
             displayName: Scan generated IaC template
             inputs:
               targetType: filePath
-              filePath: scripts/security-scan.ps1
+              filePath: scripts/scan.ps1
               pwsh: true
 
   - stage: Planning

@@ -130,7 +130,7 @@ Run the local checks before opening a pull request:
 
 ```powershell
 .\scripts\test.ps1 -Mode Static
-.\scripts\security-scan.ps1
+.\scripts\scan.ps1
 git diff --check
 ```
 

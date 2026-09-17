@@ -1,18 +1,18 @@
-﻿# PowerShell automation
+# PowerShell automation
 
 | Script | Purpose |
 |---|---|
 | `../main.ps1` | Root dispatcher for `dev|uat-connect`, `dev|uat-deploy`, and `dev|uat-clean` commands |
 | `deploy.ps1` | Validate context, self-remediate missing role-assignment permission, apply component deployment flags, skip already-current environments, preview/deploy Bicep, publish runbooks through ARM, configure diagnostics, sync secrets through ARM, bootstrap the VM, and hand off local credentials |
 | `cleanup.ps1` | Preview or delete tag-validated environment resources while preserving Key Vault and the VM OS disk |
-| `add-rdp-allow-rule.ps1` | Converge the jumpbox NSG to `allow-rdp-user`, temporary `allow-rdp-deployer`, and `deny-rdp-all` |
-| `show-vm-admin-password.ps1` | Read `vm-admin-password` from private Key Vault inside the jumpbox via managed identity and print it only to the invoking console |
+| `rdp.ps1` | Converge the jumpbox NSG to `allow-rdp-user`, temporary `allow-rdp-deployer`, and `deny-rdp-all` |
+| `show.ps1` | Read `vm-admin-password` from private Key Vault inside the jumpbox via managed identity and print it only to the invoking console |
 | `config.ps1` | Seed missing `variables/*.yaml` from their `.example`, then parse, merge, derive, and validate YAML configuration including deployment-flag dependencies |
 | `common.ps1` | Shared output, retry, and resource helpers |
 | `setup.ps1` | Install and configure the chat application inside the VM |
 | `test.ps1` | Static, deployed-resource, smoke, and dual-model tests; static builds use the platform temporary directory on Windows and Linux |
-| `security-scan.ps1` | Validate generated template security invariants, including VM- and NSG-scoped Automation roles |
-| `scan-ai-safety.ps1` | Scan markdown and instruction files for AI safety, prompt injections, jailbreaks, hidden unicode smuggling, and harmful instructions |
+| `scan.ps1` | Validate generated template security invariants, including VM- and NSG-scoped Automation roles |
+| `safety.ps1` | Scan markdown and instruction files for AI safety, prompt injections, jailbreaks, hidden unicode smuggling, and harmful instructions |
 
 Use PowerShell 7+. `deploy.ps1` installs or upgrades the Azure CLI-managed Bicep binary to the latest available release without prompting before continuing. Top-level scripts under `automation/` are parsed, hashed, provisioned, uploaded, and published as Automation runbooks; schedule links are created only after publication, and what-if mode performs validation and preview only. Normal reruns exit early only when all expected resources, runbook schedule links, and schedule properties match the local desired state and the recorded `desiredStateHash` matches the local source/configuration inputs; use `-ForceRedeploy` to bypass this guard. Local successful deployments place a plaintext credential handoff under ignored `.local/credentials/`; move the password to a password manager, delete the file, and rotate the VM password. CI never prints or writes that credential.
 

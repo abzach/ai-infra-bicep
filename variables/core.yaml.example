@@ -44,10 +44,10 @@ variables:
 
   automationRuntimeVersion: '7.4' # PowerShell runtime used by Automation runbooks; allowed value: 7.4.
   automationAzVersion: '12.3.0' # Az package version installed in the PowerShell runtime environment; use a version supported by Azure Automation.
-  vmStartScheduleEnabled: true # Links start-vm to the daily VM start schedule; allowed values: true, false.
+  vmStartScheduleEnabled: true # Links schedule-vm-start to the daily VM start schedule; allowed values: true, false.
   vmStartScheduleTime: '1100' # Daily VM start time in 24-hour HHmm format, from '0000' through '2359'.
   vmStartScheduleTimeZone: Etc/UTC # IANA time-zone ID used by the Azure Automation schedule.
-  rdpDeployerCleanupScheduleEnabled: true # Runs delete-rdp-deployer-rule once per week; allowed values: true, false.
+  rdpDeployerCleanupScheduleEnabled: true # Runs delete-nsg-rule once per week; allowed values: true, false.
   rdpDeployerCleanupScheduleTime: '0000' # Weekly cleanup start time in 24-hour HHmm format.
   rdpDeployerCleanupScheduleTimeZone: Etc/UTC # IANA time-zone ID used by the weekly cleanup schedule.
 

@@ -59,7 +59,7 @@ $operation = ($Target -split '-', 2)[1]
 
 switch ($operation) {
     'connect' {
-        $scriptPath = Join-Path $scriptRoot 'add-rdp-allow-rule.ps1'
+        $scriptPath = Join-Path $scriptRoot 'rdp.ps1'
         Write-Host "Preparing RDP access for '$environmentSuffix'. Deployment will not run."
         $scriptArguments = @{
             EnvironmentSuffix = $environmentSuffix
@@ -75,7 +75,7 @@ switch ($operation) {
         if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
         if (-not $WhatIf) {
-            & (Join-Path $scriptRoot 'show-vm-admin-password.ps1') -EnvironmentSuffix $environmentSuffix
+            & (Join-Path $scriptRoot 'show.ps1') -EnvironmentSuffix $environmentSuffix
         }
         break
     }
@@ -98,7 +98,7 @@ switch ($operation) {
             . (Join-Path $scriptRoot 'config.ps1')
             $postDeployConfig = Read-EnterpriseEnvironmentConfig -ScriptRoot $scriptRoot -EnvironmentSuffix $environmentSuffix
             if ([string]$postDeployConfig.deployVm -eq 'true') {
-                & (Join-Path $scriptRoot 'add-rdp-allow-rule.ps1') -EnvironmentSuffix $environmentSuffix -UseCurrentPublicIp
+                & (Join-Path $scriptRoot 'rdp.ps1') -EnvironmentSuffix $environmentSuffix -UseCurrentPublicIp
             }
         }
         break

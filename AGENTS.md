@@ -14,11 +14,11 @@ This repository deploys a private Azure AI Foundry learning environment with sta
 - `scripts/deploy.ps1` non-interactively updates Bicep, validates Azure context, exits early for already-current environments, deploys Bicep when needed, publishes runbooks before linking schedules, writes Key Vault secrets through ARM, bootstraps the VM through Run Command, applies the VM password, and emits a timing summary for performance tuning.
 - `automation/` contains PowerShell runbooks automatically validated and published by `scripts/deploy.ps1`.
 - `scripts/test.ps1` provides `Static`, `Validate`, `Smoke`, and `ChatDual` modes; static Bicep builds use the platform temporary directory so local and Linux CI runs behave consistently.
-- `scripts/security-scan.ps1` validates generated IaC security invariants.
+- `scripts/scan.ps1` validates generated IaC security invariants.
 - `scripts/cleanup.ps1` deletes resources from tag-validated environment resource groups while preserving Key Vault and the VM OS disk.
 - `main.ps1` dispatches `dev|uat-connect`, `dev|uat-deploy`, and `dev|uat-clean` operations.
-- `scripts/add-rdp-allow-rule.ps1` updates the deployed jumpbox NSG with explicit RDP allow rules from `rdpAllowedPublicIpAddress`, `rdpAllowedIpCidrs`, an explicit IP/CIDR, or the current public IP.
-- `scripts/show-vm-admin-password.ps1` uses VM Run Command and the VM managed identity to read the admin password through the private Key Vault endpoint without workstation data-plane access or repository logging.
+- `scripts/rdp.ps1` updates the deployed jumpbox NSG with explicit RDP allow rules from `rdpAllowedPublicIpAddress`, `rdpAllowedIpCidrs`, an explicit IP/CIDR, or the current public IP.
+- `scripts/show.ps1` uses VM Run Command and the VM managed identity to read the admin password through the private Key Vault endpoint without workstation data-plane access or repository logging.
 - `app/` contains the managed-identity Python chat and connectivity test.
 - `.mcp.json` and `.vscode/mcp.json` register the official Bicep MCP server (`Azure.Bicep.McpServer` via `dnx`) for schema lookups, best practices, diagnostics, formatting, AVM metadata, and ARM decompilation, and the Azure MCP server (`@azure/mcp`) for live subscription reads; see `.github/instructions/bicep-mcp-server.instructions.md` and `.github/instructions/azure-mcp-server.instructions.md`.
 
@@ -63,7 +63,7 @@ Run the smallest applicable checks and finish with:
 
 ```powershell
 .\scripts\test.ps1 -Mode Static
-.\scripts\security-scan.ps1
+.\scripts\scan.ps1
 ```
 
 For a deployed environment:

@@ -1,12 +1,12 @@
-# scan-ai-safety.ps1 — AI Safety, Prompt Injection, and Harmful Content Scanner
+# safety.ps1 — AI Safety, Prompt Injection, and Harmful Content Scanner
 #
 # Scans all Markdown (.md) and instruction/prompt files across the repository
 # for prompt injection attempts, system prompt overrides, harmful AI instructions,
 # hidden unicode payload smuggling, and unauthorized data exfiltration patterns.
 #
 # USAGE
-#   .\scripts\scan-ai-safety.ps1
-#   .\scripts\scan-ai-safety.ps1 -TargetDirectory . -Verbose
+#   .\scripts\safety.ps1
+#   .\scripts\safety.ps1 -TargetDirectory . -Verbose
 
 param(
     [string] $TargetDirectory = (Join-Path $PSScriptRoot '..')
@@ -18,7 +18,7 @@ $ErrorActionPreference = 'Stop'
 $scriptRoot = $PSScriptRoot
 . (Join-Path $scriptRoot 'common.ps1')
 
-Initialize-ScriptLogging -ScriptRoot $scriptRoot -ScriptName 'scan-ai-safety.ps1'
+Initialize-ScriptLogging -ScriptRoot $scriptRoot -ScriptName 'safety.ps1'
 trap { Write-LogEntry -Level 'ERROR' -Message "Unhandled error: $($_.Exception.Message)"; Write-ScriptTimingSummary -Status 'failed' }
 
 $resolvedTarget = (Resolve-Path -LiteralPath $TargetDirectory).Path

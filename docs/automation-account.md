@@ -1,12 +1,12 @@
-﻿# Azure Automation Account
+# Azure Automation Account
 
 ## Purpose
 
-The Automation Account publishes every top-level PowerShell script from `automation/` as a PowerShell 7.4 cloud runbook. `start-vm` starts the jumpbox daily. `delete-rdp-deployer-rule` runs weekly and removes only the temporary `allow-rdp-deployer` NSG rule.
+The Automation Account publishes every top-level PowerShell script from `automation/` as a PowerShell 7.4 cloud runbook. `schedule-vm-start` starts the jumpbox daily. `delete-nsg-rule` runs weekly and removes only the temporary `allow-rdp-deployer` NSG rule.
 
 ## Deployment flag
 
-This component is controlled by `deployAutomation` in your environment YAML. When set to `false`, the next `scripts/deploy.ps1` run removes the Automation Account (with its runbooks, schedules, and job schedules) and the Automation managed identity, and runbook publication is skipped. `deployAutomation` requires `deployVm` because the `start-vm` runbook is scoped to the jumpbox VM.
+This component is controlled by `deployAutomation` in your environment YAML. When set to `false`, the next `scripts/deploy.ps1` run removes the Automation Account (with its runbooks, schedules, and job schedules) and the Automation managed identity, and runbook publication is skipped. `deployAutomation` requires `deployVm` because the `schedule-vm-start` runbook is scoped to the jumpbox VM.
 
 ## Identity and RBAC
 

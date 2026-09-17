@@ -14,7 +14,7 @@ Documentation in this repository is part of the change, not optional follow-up n
 | `bicep/templates/main.bicepparam` | `bicep/templates/README.md` |
 | `variables/core.yaml`, `variables/dev.yaml`, or `variables/uat.yaml` | the matching `variables/*.yaml.example` template, `variables/README.md`, `variables/index.md`, and the configuration tables in the root `README.md` |
 | A component deployment flag (`deploy*`) | `variables/README.md`, root `README.md`, `scripts/README.md`, and the `docs/*.md` page for that component |
-| `scripts/deploy.ps1`, `scripts/config.ps1`, `scripts/common.ps1`, `scripts/setup.ps1`, `scripts/test.ps1`, or `scripts/security-scan.ps1` | `scripts/README.md`, the deployment workflow diagram in the root `README.md`, and `AGENTS.md` |
+| `scripts/deploy.ps1`, `scripts/config.ps1`, `scripts/common.ps1`, `scripts/setup.ps1`, `scripts/test.ps1`, or `scripts/scan.ps1` | `scripts/README.md`, the deployment workflow diagram in the root `README.md`, and `AGENTS.md` |
 | `app/*.py`, `app/requirements.txt`, or `app/.env.example` | `app/README.md` |
 | `.github/workflows/*.yml` or `pipelines/*.yml` | `.github/README.md`, `.github/workflows/README.md`, `pipelines/README.md`, and relevant `docs/*.md` files |
 | Any `.github/instructions/*.instructions.md` skill file | `.github/copilot-skills-plan.md` and `.github/instructions/README.md` |

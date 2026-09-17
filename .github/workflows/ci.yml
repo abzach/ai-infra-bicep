@@ -33,7 +33,7 @@ jobs:
 
       - name: Run Security Scan
         shell: pwsh
-        run: ./scripts/security-scan.ps1
+        run: ./scripts/scan.ps1
 
   ai-safety-scan:
     name: AI Safety & Prompt Injection Scan
@@ -44,7 +44,7 @@ jobs:
 
       - name: Run AI Safety Scan
         shell: pwsh
-        run: ./scripts/scan-ai-safety.ps1
+        run: ./scripts/safety.ps1
 
   python-app-check:
     name: Python App Syntax & Lint

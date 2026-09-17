@@ -66,7 +66,7 @@ Inspect the VM power state, auto-shutdown schedule, Automation schedules, and Lo
 - The Azure MCP server inherits the local `az login` context. Always confirm the active subscription before acting on results.
 - Treat Azure MCP as **read-first**. Prefer read/list/query operations for investigation. Do not use it to create, mutate, or delete environment resources that `deploy.ps1` owns; that is the deployment script's job and an out-of-band change breaks the `desiredStateHash` no-op guard.
 - Never echo secrets, credentials, connection strings, tenant IDs, subscription IDs, or object IDs retrieved through Azure MCP into tracked files, documentation, or commit messages.
-- MCP findings are evidence, not validation. Still run `.\scripts\test.ps1 -Mode Static`, `.\scripts\security-scan.ps1`, and `.\scripts\deploy.ps1 -EnvironmentSuffix <env> -WhatIf`.
+- MCP findings are evidence, not validation. Still run `.\scripts\test.ps1 -Mode Static`, `.\scripts\scan.ps1`, and `.\scripts\deploy.ps1 -EnvironmentSuffix <env> -WhatIf`.
 - If the `azure` MCP tools are unavailable, confirm Node.js 20+ and `npx` are on `PATH`, then fall back to `az` CLI commands in the terminal.
 
 ## Keep this skill current

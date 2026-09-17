@@ -83,11 +83,11 @@ param automationRuntimeVersion = '7.4'
 param automationAzVersion = '12.3.0'
 param automationRunbooks = [
   {
-    name: 'delete-rdp-deployer-rule'
+    name: 'delete-nsg-rule'
     sourceHash: '0000000000000000000000000000000000000000000000000000000000000000'
   }
   {
-    name: 'start-vm'
+    name: 'schedule-vm-start'
     sourceHash: '0000000000000000000000000000000000000000000000000000000000000000'
   }
 ]

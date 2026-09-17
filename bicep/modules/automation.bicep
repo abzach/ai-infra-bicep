@@ -57,8 +57,8 @@ param vmResourceId string
 param tags object = {}
 
 var runtimeEnvironmentName = 'PowerShell-${replace(runtimeVersion, '.', '-')}'
-var startVmRunbookName = 'start-vm'
-var deleteRdpDeployerRuleRunbookName = 'delete-rdp-deployer-rule'
+var startVmRunbookName = 'schedule-vm-start'
+var deleteRdpDeployerRuleRunbookName = 'delete-nsg-rule'
 
 resource automationAccount 'Microsoft.Automation/automationAccounts@2024-10-23' = {
   name: automationAccountName

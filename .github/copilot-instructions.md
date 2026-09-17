@@ -23,7 +23,7 @@ Use the smallest applicable check first, then finish infrastructure changes with
 
 ```powershell
 .\scripts\test.ps1 -Mode Static
-.\scripts\security-scan.ps1
+.\scripts\scan.ps1
 git diff --check
 git --no-pager status --short
 ```

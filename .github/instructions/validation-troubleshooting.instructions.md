@@ -1,10 +1,10 @@
 ---
-applyTo: "scripts/test.ps1,scripts/security-scan.ps1,scripts/deploy.ps1,scripts/cleanup.ps1,README.md,AGENTS.md"
+applyTo: "scripts/test.ps1,scripts/scan.ps1,scripts/deploy.ps1,scripts/cleanup.ps1,README.md,AGENTS.md"
 ---
 
 # Validation and troubleshooting
 
-- For source-only infrastructure changes, run `.\scripts\test.ps1 -Mode Static` and `.\scripts\security-scan.ps1`.
+- For source-only infrastructure changes, run `.\scripts\test.ps1 -Mode Static` and `.\scripts\scan.ps1`.
 - For deployed environment fixes, run `.\scripts\deploy.ps1 -EnvironmentSuffix dev -WhatIf` before applying changes.
 - After a successful live deployment, run the relevant live checks: `Validate`, `Smoke`, and `ChatDual` as applicable.
 - Parse changed PowerShell files before committing to catch syntax errors.

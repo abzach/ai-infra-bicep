@@ -12,7 +12,7 @@ applyTo: "bicep/**/*.bicep,variables/**/*.yaml"
 - Prefer private endpoints and private DNS zone links for new data-plane services.
 - Add outputs only when a deployment script, test, module, or documentation needs them.
 - Put shared non-SKU defaults in `variables/core.yaml`; put SKU, capacity, identity, and environment-specific values in `variables/dev.yaml` or `variables/uat.yaml`.
-- Update `scripts/security-scan.ps1` when adding resources with security invariants that must not regress.
+- Update `scripts/scan.ps1` when adding resources with security invariants that must not regress.
 - Use the Bicep MCP server for resource type/API schema lookups, best practices, diagnostics, and formatting instead of guessing; see `bicep-mcp-server.instructions.md` for which tool to use for each kind of Bicep change.
 - Update `bicep/README.md`, `bicep/modules/README.md`, and any affected `index.md`/root `README.md` sections in the same change; see `documentation-sync.instructions.md`.
 

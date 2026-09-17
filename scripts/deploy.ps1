@@ -786,8 +786,8 @@ function Get-DeploymentDesiredStateHash {
     $relativePaths.Add('scripts\common.ps1')
     $relativePaths.Add('scripts\setup.ps1')
     $relativePaths.Add('main.ps1')
-    $relativePaths.Add('scripts\add-rdp-allow-rule.ps1')
-    $relativePaths.Add('scripts\show-vm-admin-password.ps1')
+    $relativePaths.Add('scripts\rdp.ps1')
+    $relativePaths.Add('scripts\show.ps1')
     $relativePaths.Add('app\chat.py')
     $relativePaths.Add('app\test.py')
     $relativePaths.Add('app\requirements.txt')
@@ -1383,10 +1383,10 @@ function Test-EnterpriseDeploymentCurrent {
             }
             $jobSchedules = ($jobSchedulesJson | ConvertFrom-Json).value
             $matchingJob = @($jobSchedules | Where-Object {
-                $_.properties.runbook.name -eq 'start-vm' -and $_.properties.schedule.name -eq $VmStartScheduleName
+                $_.properties.runbook.name -eq 'schedule-vm-start' -and $_.properties.schedule.name -eq $VmStartScheduleName
             })
             if ($matchingJob.Count -eq 0) {
-                Write-Info "  Not current: runbook 'start-vm' is not linked to schedule '$VmStartScheduleName'."
+                Write-Info "  Not current: runbook 'schedule-vm-start' is not linked to schedule '$VmStartScheduleName'."
                 return $false
             }
         }
@@ -1401,10 +1401,10 @@ function Test-EnterpriseDeploymentCurrent {
                 $jobSchedules = ($jobSchedulesJson | ConvertFrom-Json).value
             }
             $matchingCleanupJob = @($jobSchedules | Where-Object {
-                $_.properties.runbook.name -eq 'delete-rdp-deployer-rule' -and $_.properties.schedule.name -eq $RdpDeployerCleanupScheduleName
+                $_.properties.runbook.name -eq 'delete-nsg-rule' -and $_.properties.schedule.name -eq $RdpDeployerCleanupScheduleName
             })
             if ($matchingCleanupJob.Count -eq 0) {
-                Write-Info "  Not current: runbook 'delete-rdp-deployer-rule' is not linked to schedule '$RdpDeployerCleanupScheduleName'."
+                Write-Info "  Not current: runbook 'delete-nsg-rule' is not linked to schedule '$RdpDeployerCleanupScheduleName'."
                 return $false
             }
         }
@@ -2406,7 +2406,7 @@ if ($AutomationEnabled) {
             -AutomationAccountName $automationAccountName `
             -JobScheduleName $automationJobScheduleName `
             -ScheduleName $vmStartScheduleName `
-            -RunbookName 'start-vm' `
+            -RunbookName 'schedule-vm-start' `
             -RunbookParameters @{
                 automationIdentityClientId = $automationIdentityClientId
                 resourceGroupName = $CoreResourceGroupName
@@ -2425,7 +2425,7 @@ if ($AutomationEnabled) {
             -AutomationAccountName $automationAccountName `
             -JobScheduleName $rdpCleanupJobScheduleName `
             -ScheduleName $rdpDeployerCleanupScheduleName `
-            -RunbookName 'delete-rdp-deployer-rule' `
+            -RunbookName 'delete-nsg-rule' `
             -RunbookParameters @{
                 automationIdentityClientId = $automationIdentityClientId
                 networkSecurityGroupName = "$vmName-nsg"

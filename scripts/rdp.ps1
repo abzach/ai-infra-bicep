@@ -1,15 +1,15 @@
-# add-rdp-allow-rule.ps1 — Adds configured RDP source CIDRs to the jumpbox NSG.
+# rdp.ps1 — Adds configured RDP source CIDRs to the jumpbox NSG.
 #
 # EXAMPLES
 #   # Apply rdpAllowedPublicIpAddress and rdpAllowedIpCidrs from variables/dev.yaml
-#   .\add-rdp-allow-rule.ps1 -EnvironmentSuffix dev
+#   .\rdp.ps1 -EnvironmentSuffix dev
 #
 #   # Add the current workstation public IP for this run
-#   .\add-rdp-allow-rule.ps1 -EnvironmentSuffix dev -UseCurrentPublicIp
+#   .\rdp.ps1 -EnvironmentSuffix dev -UseCurrentPublicIp
 #
 #   # Add one explicit address or CIDR without editing YAML
-#   .\add-rdp-allow-rule.ps1 -EnvironmentSuffix dev -IpAddress 203.0.113.10
-#   .\add-rdp-allow-rule.ps1 -EnvironmentSuffix dev -IpCidr 203.0.113.10/32
+#   .\rdp.ps1 -EnvironmentSuffix dev -IpAddress 203.0.113.10
+#   .\rdp.ps1 -EnvironmentSuffix dev -IpCidr 203.0.113.10/32
 
 param(
     [Parameter(Mandatory)]
@@ -43,7 +43,7 @@ function Get-CurrentScriptRoot {
         }
     }
 
-    throw 'Unable to resolve the script root for add-rdp-allow-rule.ps1.'
+    throw 'Unable to resolve the script root for rdp.ps1.'
 }
 
 $scriptRoot = Get-CurrentScriptRoot
@@ -51,7 +51,7 @@ $scriptRoot = Get-CurrentScriptRoot
 . (Join-Path $scriptRoot 'config.ps1')
 . (Join-Path $scriptRoot 'common.ps1')
 
-Initialize-ScriptLogging -ScriptRoot $scriptRoot -ScriptName 'add-rdp-allow-rule.ps1'
+Initialize-ScriptLogging -ScriptRoot $scriptRoot -ScriptName 'rdp.ps1'
 trap { Write-LogEntry -Level 'ERROR' -Message "Unhandled error: $($_.Exception.Message)"; Write-ScriptTimingSummary -Status 'failed' }
 
 function Convert-ToBoolean {
