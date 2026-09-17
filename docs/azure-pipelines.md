@@ -49,8 +49,8 @@ The repository provides two unified multi-stage Azure DevOps pipelines featuring
 
 | Stage | Job Name | Task | Arguments | Purpose |
 |---|---|---|---|---|
-| **Preview** | `Preview` | `AzureCLI@2` | `-EnvironmentSuffix ${{ parameters.environment }} -WhatIf` | Lists targeted resource groups without deleting |
-| **Destroy** | `Destroy` | `AzureCLI@2` | `-EnvironmentSuffix ${{ parameters.environment }} -Force` | Deletes tag-validated environment resource groups |
+| **Preview** | `Preview` | `AzureCLI@2` | `-EnvironmentSuffix ${{ parameters.environment }} -WhatIf` | Lists targeted resources and protected Key Vault/OS disk without deleting |
+| **Destroy** | `Destroy` | `AzureCLI@2` | `-EnvironmentSuffix ${{ parameters.environment }} -Force` | Deletes resources in tag-validated groups while preserving Key Vault and the VM OS disk |
 
 ## Pipeline Variable Requirements
 

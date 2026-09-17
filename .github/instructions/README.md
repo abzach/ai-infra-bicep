@@ -6,7 +6,7 @@ Path-specific instruction files in this folder capture recurring GitHub Copilot 
 |---|---|---|
 | `bicep-service-change.instructions.md` | Bicep and variable files | Add or modify Azure services without breaking naming, service tag limits, private networking, or security invariants |
 | `bicep-mcp-server.instructions.md` | Bicep files and MCP config | Use the official Bicep MCP server tools for schema lookups, best practices, diagnostics, formatting, and ARM decompilation |
-| `azure-mcp-server.instructions.md` | Bicep, scripts, variables, and MCP config | Use the Azure MCP server against the live subscription to diagnose failures, confirm supported SKUs/quotas/regions, and verify deployment flags, alongside the Bicep MCP server |
+| `azure-mcp-server.instructions.md` | Bicep, scripts, variables, and MCP config | Use the Azure MCP server against the live subscription to diagnose failures, confirm model-array SKUs/quotas/regions, and verify deployment flags, alongside the Bicep MCP server |
 | `azure-rbac-preflight.instructions.md` | Deployment scripts and workflows | Keep the role-assignment write preflight self-remediating: detect, self-grant User Access Administrator, elevate when allowed, re-verify, then fail loudly |
 | `local-configuration.instructions.md` | Variables, scripts, docs, and pipelines | Keep every user-specific value inside untracked `variables/*.yaml`, commit only `*.yaml.example` templates, and keep other files value-free |
 | `deployment-orchestration.instructions.md` | Deployment and config scripts | Preserve idempotent deploy behavior, non-interactive Bicep updates, ordered runbook publication, ARM secret sync, VM bootstrap, and explicit error handling |

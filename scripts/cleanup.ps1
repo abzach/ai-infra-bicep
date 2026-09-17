@@ -1,4 +1,4 @@
-# cleanup.ps1 — Deletes all resource groups for the specified environment.
+# cleanup.ps1 — Deletes environment resources except Key Vault and the VM OS disk.
 #
 # EXAMPLES
 #   # Preview what would be deleted
@@ -123,18 +123,49 @@ foreach ($rgName in $resourceGroups) {
 Write-Exists "  Tag guard passed: all existing resource groups have workload='$expectedWorkloadTag'."
 Write-Info ''
 
-Write-Task "Resource groups targeted for deletion:"
-foreach ($rgName in $resourceGroups) {
-    if ($existingResourceGroups.Contains($rgName)) {
-        Write-Needed "  $rgName"
-    } else {
-        Write-Info "  $rgName (not found - already gone)"
+$protectedKeyVaultNames = @($configWithSuffix.keyVaultName, $legacyConfig.keyVaultName) | Sort-Object -Unique
+$protectedDiskNames = @("$($configWithSuffix.vmName)-osdisk", "$($legacyConfig.vmName)-osdisk") | Sort-Object -Unique
+$projectNames = @($configWithSuffix.projectName, $legacyConfig.projectName) | Sort-Object -Unique
+$resourcesToDelete = [System.Collections.Generic.List[object]]::new()
+$resourcesToPreserve = [System.Collections.Generic.List[object]]::new()
+
+foreach ($rgName in $existingResourceGroups) {
+    $resourceJson = az resource list --resource-group $rgName --output json 2>$null
+    if ($LASTEXITCODE -ne 0) {
+        Write-Error "Unable to enumerate resources in '$rgName'."
+        exit 1
     }
+
+    foreach ($resource in @($resourceJson | ConvertFrom-Json)) {
+        $isProtectedKeyVault = $resource.type -eq 'Microsoft.KeyVault/vaults' -and $resource.name -in $protectedKeyVaultNames
+        $isProtectedDisk = $resource.type -eq 'Microsoft.Compute/disks' -and $resource.name -in $protectedDiskNames
+        if ($isProtectedKeyVault -or $isProtectedDisk) {
+            $resourcesToPreserve.Add($resource)
+        } else {
+            $resourcesToDelete.Add($resource)
+        }
+    }
+}
+
+Write-Task 'Resources preserved:'
+foreach ($resource in $resourcesToPreserve) {
+    Write-Exists "  $($resource.type)/$($resource.name)"
+}
+if ($resourcesToPreserve.Count -eq 0) {
+    Write-Info '  No protected Key Vault or OS disk currently exists.'
 }
 Write-Info ''
 
-Write-Needed 'This permanently deletes all resources in both resource groups.'
-Write-Info   'Soft-delete purging (Key Vault, OpenAI) is handled by deploy.ps1 on next run.'
+Write-Task 'Resources targeted for deletion:'
+foreach ($resource in $resourcesToDelete) {
+    Write-Needed "  $($resource.type)/$($resource.name)"
+}
+if ($resourcesToDelete.Count -eq 0) {
+    Write-Info '  No deletable resources found.'
+}
+Write-Info ''
+
+Write-Needed 'This permanently deletes every listed resource while retaining the Key Vault, VM OS disk, and resource-group containers.'
 Write-Info ''
 
 if ($WhatIf) {
@@ -143,8 +174,8 @@ if ($WhatIf) {
     exit 0
 }
 
-if ($existingResourceGroups.Count -eq 0) {
-    Write-Exists 'Nothing to delete - all matching resource groups are already gone.'
+if ($resourcesToDelete.Count -eq 0) {
+    Write-Exists 'Nothing to delete - only protected resources remain.'
     Complete-ScriptLogging -Status 'completed (nothing to delete)'
     exit 0
 }
@@ -162,33 +193,55 @@ if (-not $Force) {
 
 Write-Info ''
 
-$rgsToDelete = @()
-foreach ($rg in $resourceGroups) {
-    if ((az group exists --name $rg) -eq 'true') {
-        Remove-ResourceGroupLocks -ResourceGroupName $rg
-        Write-Task "Initiating deletion of '$rg'..."
-        az group delete --name $rg --yes --no-wait 2>&1 | Out-Null
-        $rgsToDelete += $rg
-    }
+$deletePriority = @{
+    'Microsoft.DevTestLab/schedules' = 10
+    'Microsoft.Compute/virtualMachines' = 20
+    'Microsoft.Automation/automationAccounts' = 30
+    'Microsoft.MachineLearningServices/workspaces' = 40
+    'Microsoft.Network/privateEndpoints' = 50
+    'Microsoft.Network/networkInterfaces' = 60
+    'Microsoft.Storage/storageAccounts' = 70
+    'Microsoft.CognitiveServices/accounts' = 80
+    'Microsoft.OperationalInsights/workspaces' = 90
+    'Microsoft.ManagedIdentity/userAssignedIdentities' = 100
+    'Microsoft.Network/publicIPAddresses' = 110
+    'Microsoft.Network/networkSecurityGroups' = 120
+    'Microsoft.Network/privateDnsZones' = 130
+    'Microsoft.Network/virtualNetworks' = 140
 }
 
-Write-Info ''
+$orderedResources = @($resourcesToDelete | Sort-Object @{
+    Expression = {
+        if ([string]$_.type -eq 'Microsoft.MachineLearningServices/workspaces' -and [string]$_.name -in $projectNames) { 35 }
+        elseif ($deletePriority.ContainsKey([string]$_.type)) { $deletePriority[[string]$_.type] }
+        else { 75 }
+    }
+}, @{ Expression = { [string]$_.id } })
 
-foreach ($rg in $rgsToDelete) {
-    Write-Task "Waiting for '$rg' to be fully deleted (timeout 10 min)..."
-    $removed = Wait-WithBackoff -Condition {
-        return (az group exists --name $rg) -ne 'true'
-    } -MaxWaitSeconds 600 -InitialDelaySeconds 5 -MaxDelaySeconds 60 -OperationName "RG deletion"
-
-    if ($removed) {
-        Write-Exists "  '$rg' deleted."
+foreach ($resource in $orderedResources) {
+    Write-Task "Deleting $($resource.type)/$($resource.name)..."
+    if ($resource.type -eq 'Microsoft.Compute/virtualMachines') {
+        az vm update --ids $resource.id --set storageProfile.osDisk.deleteOption=Detach --output none
+        if ($LASTEXITCODE -ne 0) {
+            Write-Error "Failed to set the OS disk delete option to Detach for '$($resource.name)'."
+            exit 1
+        }
+        az vm delete --ids $resource.id --yes --output none
     } else {
-        Write-Needed "  Warning: '$rg' deletion timed out — may still be running in background."
-        Write-Info   "  Try checking with: az group exists --name $rg"
+        az resource delete --ids $resource.id --output none
     }
+
+    if ($LASTEXITCODE -ne 0) {
+        az resource show --ids $resource.id --output none 2>$null
+        if ($LASTEXITCODE -eq 0) {
+            Write-Error "Failed to delete '$($resource.id)'. Resolve the dependency or lock and rerun cleanup."
+            exit 1
+        }
+    }
+    Write-Exists "  Deleted $($resource.type)/$($resource.name)."
 }
 
 Write-Info ''
-Write-Exists "Cleanup complete for '$EnvironmentSuffix'."
+Write-Exists "Cleanup complete for '$EnvironmentSuffix'. Key Vault and VM OS disk were preserved."
 Write-Info ''
 Complete-ScriptLogging -Status 'completed'

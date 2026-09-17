@@ -27,7 +27,7 @@ The network module provisions a secured Virtual Network (VNet) with isolated sub
 | **Public IP DNS Label** | `vmPublicIpDnsNameLabel` from environment YAML | Optional label for `<label>.<region>.cloudapp.azure.com`; for example `az-swe-aifp` in `swedencentral` creates `az-swe-aifp.swedencentral.cloudapp.azure.com` |
 | **NIC Accelerated Networking** | `true` | Enabled on the VM Network Interface (`vmAcceleratedNetworking`) |
 | **NSG Default Deny RDP** | `Deny` / Priority `4096` | Blocks all inbound RDP (`TCP 3389`) from any source (`*`) |
-| **NSG Explicit RDP Whitelist** | Priority `200+` | Allows RDP only from explicitly supplied IPv4 CIDRs (`rdpAllowedIpCidrs`) |
+| **NSG Explicit RDP Whitelist** | Priority `200+` | `allow-rdp-user` holds environment YAML sources; `allow-rdp-deployer` holds the temporary detected source and is deleted weekly. `main.ps1 dev-connect` / `uat-connect` refresh these rules without deployment. |
 
 ### Private DNS Zones & VNet Links
 
@@ -42,7 +42,7 @@ The module creates four core Private DNS zones in the global location and links 
 
 ## Security Invariants
 
-1. **Deny-All RDP Perimeter:** Inbound RDP (`3389`) is blocked by default with priority `4096`. Inbound rules are only created for specific IP ranges detected or configured at deploy time.
+1. **Deny-All RDP Perimeter:** Inbound RDP (`3389`) is blocked by default with priority `4096`. Inbound rules are only created for specific IP ranges detected or configured at deploy time, or added later with `scripts/add-rdp-allow-rule.ps1`.
 2. **Private Link DNS Integration:** All PaaS service endpoints resolve to internal private IP addresses on the `services` subnet (`10.0.1.0/24`), preventing data-plane traffic from leaving Azure's private backbone.
 
 ## Related Documentation

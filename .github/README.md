@@ -7,7 +7,7 @@ GitHub Actions definitions for automated CI testing, development deployment, and
 - Repository Copilot skill guidance lives in `copilot-instructions.md`, `copilot-skills-plan.md`, and path-specific files under `instructions/`.
 - Architecture and security documentation lives in the [`docs/`](../docs/README.md) catalog.
 - The official Bicep MCP server is registered in [`.mcp.json`](../.mcp.json) and [`.vscode/mcp.json`](../.vscode/mcp.json); see `instructions/bicep-mcp-server.instructions.md` for which Bicep tasks should use it.
-- Cleanup resolves OIDC login secret names from the selected environment YAML, previews deletion, then invokes the guarded cleanup script for that environment.
+- Cleanup resolves OIDC login secret names from the selected environment YAML, previews resource deletion, then invokes guarded cleanup while preserving Key Vault and the VM OS disk.
 - Configure repository secrets named by `githubAzureClientIdSecretName`, `githubAzureTenantIdSecretName`, and `githubAzureSubscriptionIdSecretName` in `variables/<env>.yaml`; the default names are `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, and `AZURE_SUBSCRIPTION_ID`. Also configure `VM_ADMIN_PASSWORD`.
 - The federated identity needs deployment permissions described in the root [README](../README.md).
 - VM passwords are not printed in CI. The deployment workflow supplies `VM_ADMIN_PASSWORD` to `-VmAdminPassword`; retrieve and rotate it through your secret-management process.

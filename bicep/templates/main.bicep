@@ -29,6 +29,20 @@ type actorAssignment = {
   principalType: ('User' | 'Group' | 'ServicePrincipal')?
 }
 
+type modelDeploymentConfig = {
+  deploymentName: string
+  modelName: string
+  modelVersion: string
+  skuName: string
+  @minValue(1)
+  capacityK: int
+}
+
+type rdpAllowRuleConfig = {
+  name: 'allow-rdp-deployer' | 'allow-rdp-user'
+  sourceAddressPrefixes: string[]
+}
+
 @description('Administrator actors granted highest level data-plane and control-plane roles across all services.')
 param adminActors actorAssignment[] = []
 
@@ -44,37 +58,9 @@ param deployingObjectId string = ''
 @description('Principal type for deployingObjectId. Use ServicePrincipal for pipeline SPs, User for interactive accounts.')
 param deployingPrincipalType string = 'ServicePrincipal'
 
-@description('Model deployment name for GPT-4.1 mini (primary).')
-param modelDeploymentName string
-
-@description('Model family name for the primary deployment.')
-param modelName string
-
-@description('Model version for the primary deployment.')
-param modelVersion string
-
-@description('Provisioning SKU for the primary deployment.')
-param modelSkuName string
-
-@description('Tokens-per-minute capacity in thousands for the primary deployment.')
-@minValue(1)
-param capacityK int
-
-@description('Model deployment name for GPT-4.1 nano (secondary).')
-param secondaryModelDeploymentName string
-
-@description('Model family name for the secondary deployment.')
-param secondaryModelName string
-
-@description('Model version for the secondary deployment.')
-param secondaryModelVersion string
-
-@description('Provisioning SKU for the secondary deployment.')
-param secondaryModelSkuName string
-
-@description('Tokens-per-minute capacity in thousands for the secondary deployment.')
-@minValue(1)
-param secondaryCapacityK int
+@description('Azure OpenAI model deployments. The first two are used by the chat app as primary and secondary models.')
+@minLength(2)
+param modelDeployments modelDeploymentConfig[]
 
 @description('Local administrator username for the Windows jumpbox VM.')
 param vmAdminUsername string
@@ -106,8 +92,8 @@ param vmImageVersion string
 ])
 param vmOsDiskStorageAccountType string
 
-@description('IPv4 CIDRs allowed to RDP into the jumpbox VM (for example: 203.0.113.10/32). Leave empty to block all RDP.')
-param rdpAllowedIpCidrs array = []
+@description('Named RDP allow rules for the deployer and configured user addresses.')
+param rdpAllowRules rdpAllowRuleConfig[] = []
 
 @description('4-character suffix derived from the subscription ID for globally unique resource names.')
 @minLength(4)
@@ -164,6 +150,15 @@ param vmStartScheduleStartTime string = ''
 
 @description('Time zone for the VM start schedule.')
 param vmStartScheduleTimeZone string = 'Etc/UTC'
+
+@description('Enable the weekly temporary RDP deployer rule cleanup schedule.')
+param rdpDeployerCleanupScheduleEnabled bool = true
+
+@description('First occurrence of the temporary RDP deployer rule cleanup schedule.')
+param rdpDeployerCleanupScheduleStartTime string = ''
+
+@description('Time zone for the temporary RDP deployer rule cleanup schedule.')
+param rdpDeployerCleanupScheduleTimeZone string = 'Etc/UTC'
 
 @description('Enable private endpoints for AI Hub and AI Project workspaces.')
 param privateAiWorkspacesOnly bool = true
@@ -246,6 +241,7 @@ var vmManagedIdentityName    = 'mi-${baseName}-vm-${environmentSuffix}-${nameSuf
 var automationManagedIdentityName = 'mi-${baseName}-automation-${environmentSuffix}-${nameSuffix}'
 var automationAccountName    = 'aa-${baseName}-${environmentSuffix}-${nameSuffix}'
 var vmStartScheduleName      = 'start-vm-daily'
+var rdpDeployerCleanupScheduleName = 'delete-rdp-deployer-weekly'
 var vnetName                 = 'vnet-${baseName}-${environmentSuffix}-${nameSuffix}'
 var vmName                   = 'vm-${baseName}-${environmentSuffix}-${nameSuffix}'
 var lawWorkspaceName         = 'law-${baseName}-${environmentSuffix}-${nameSuffix}'
@@ -273,9 +269,10 @@ module networkModule '../modules/network.bicep' = {
     acceleratedNetworkingEnabled: vmAcceleratedNetworking
     tags: effectiveTags
     vmName: vmName
-    rdpAllowedIpCidrs: rdpAllowedIpCidrs
+    rdpAllowRules: rdpAllowRules
     deployVmNetworking: deployVm
     publicIpDnsNameLabel: vmPublicIpDnsNameLabel
+    automationPrincipalId: deployAutomation ? automationManagedIdentityModule!.outputs.principalId : ''
   }
 }
 
@@ -364,16 +361,7 @@ module openAiModule '../modules/openai.bicep' = {
   params: {
     openAiAccountName: openAiAccountName
     location: location
-    modelDeploymentName: modelDeploymentName
-    modelName: modelName
-    modelVersion: modelVersion
-    modelSkuName: modelSkuName
-    capacityK: capacityK
-    secondaryModelDeploymentName: secondaryModelDeploymentName
-    secondaryModelName: secondaryModelName
-    secondaryModelVersion: secondaryModelVersion
-    secondaryModelSkuName: secondaryModelSkuName
-    secondaryCapacityK: secondaryCapacityK
+    modelDeployments: modelDeployments
     logAnalyticsWorkspaceResourceId: logAnalyticsWorkspaceResourceId
     disableLocalAuth: disableLocalAuth
     tags: effectiveTags
@@ -523,6 +511,10 @@ module automationModule '../modules/automation.bicep' = if (deployAutomation) {
     vmStartScheduleName: vmStartScheduleName
     vmStartScheduleStartTime: vmStartScheduleStartTime
     vmStartScheduleTimeZone: vmStartScheduleTimeZone
+    rdpDeployerCleanupScheduleEnabled: rdpDeployerCleanupScheduleEnabled
+    rdpDeployerCleanupScheduleName: rdpDeployerCleanupScheduleName
+    rdpDeployerCleanupScheduleStartTime: rdpDeployerCleanupScheduleStartTime
+    rdpDeployerCleanupScheduleTimeZone: rdpDeployerCleanupScheduleTimeZone
     vmResourceId: vmModule!.outputs.vmId
     tags: effectiveTags
   }
@@ -545,6 +537,11 @@ module actorRolesModule '../modules/actorroles.bicep' = if (!empty(effectiveAdmi
   dependsOn: [
     keyVaultModule
     openAiModule
+    storageModule
+    aiHubModule
+    aiProjectModule
+    vmModule
+    lawModule
   ]
 }
 
@@ -579,6 +576,8 @@ output automationManagedIdentityClientId string = deployAutomation ? automationM
 output automationRunbookNames array = deployAutomation ? automationModule!.outputs.runbookNames : []
 output vmStartScheduleName string = deployAutomation ? automationModule!.outputs.scheduleName : ''
 output automationJobScheduleName string = deployAutomation ? automationModule!.outputs.jobScheduleName : ''
+output rdpDeployerCleanupScheduleName string = deployAutomation ? automationModule!.outputs.rdpDeployerCleanupScheduleName : ''
+output rdpDeployerCleanupJobScheduleName string = deployAutomation ? automationModule!.outputs.rdpDeployerCleanupJobScheduleName : ''
 output vnetId string = networkModule.outputs.id
 output vmName string = deployVm ? vmModule!.outputs.vmName : ''
 output vmPublicIpAddress string = networkModule.outputs.publicIpAddress

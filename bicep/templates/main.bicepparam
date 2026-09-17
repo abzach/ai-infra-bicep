@@ -32,16 +32,22 @@ param storageBlobSoftDeleteRetentionDays = 7
 param storageContainerSoftDeleteRetentionDays = 7
 param keyVaultSoftDeleteRetentionDays = 7
 
-param modelDeploymentName = 'primary-model'
-param modelName = 'gpt-4.1-mini'
-param modelVersion = '2025-04-14'
-param modelSkuName = 'GlobalStandard'
-param capacityK = 10
-param secondaryModelDeploymentName = 'secondary-model'
-param secondaryModelName = 'gpt-4.1-nano'
-param secondaryModelVersion = '2025-04-14'
-param secondaryModelSkuName = 'GlobalStandard'
-param secondaryCapacityK = 8
+param modelDeployments = [
+  {
+    deploymentName: 'primary-model'
+    modelName: 'gpt-4.1-mini'
+    modelVersion: '2025-04-14'
+    skuName: 'GlobalStandard'
+    capacityK: 10
+  }
+  {
+    deploymentName: 'secondary-model'
+    modelName: 'gpt-4.1-nano'
+    modelVersion: '2025-04-14'
+    skuName: 'GlobalStandard'
+    capacityK: 8
+  }
+]
 
 param disableLocalAuth = true
 param privateAiWorkspacesOnly = true
@@ -51,6 +57,14 @@ param servicesSubnetAddressPrefix = '10.0.1.0/24'
 param vmSubnetAddressPrefix = '10.0.2.0/24'
 param vmAcceleratedNetworking = true
 param vmPublicIpDnsNameLabel = ''
+param rdpAllowRules = [
+  {
+    name: 'allow-rdp-user'
+    sourceAddressPrefixes: [
+      '203.0.113.10/32'
+    ]
+  }
+]
 
 param vmAdminUsername = 'azureadmin'
 param vmAdminPassword = readEnvironmentVariable('VM_ADMIN_PASSWORD', '')
@@ -69,6 +83,10 @@ param automationRuntimeVersion = '7.4'
 param automationAzVersion = '12.3.0'
 param automationRunbooks = [
   {
+    name: 'delete-rdp-deployer-rule'
+    sourceHash: '0000000000000000000000000000000000000000000000000000000000000000'
+  }
+  {
     name: 'start-vm'
     sourceHash: '0000000000000000000000000000000000000000000000000000000000000000'
   }
@@ -76,6 +94,9 @@ param automationRunbooks = [
 param vmStartScheduleEnabled = true
 param vmStartScheduleStartTime = '2026-12-01T11:00:00+00:00'
 param vmStartScheduleTimeZone = 'Etc/UTC'
+param rdpDeployerCleanupScheduleEnabled = true
+param rdpDeployerCleanupScheduleStartTime = '2026-12-01T00:00:00+00:00'
+param rdpDeployerCleanupScheduleTimeZone = 'Etc/UTC'
 param nameSuffix = '0000'
 
 param logAnalyticsRetentionDays = 30

@@ -3,6 +3,8 @@
 - [Automation overview](README.md)
 - [`deploy.ps1`](deploy.ps1)
 - [`cleanup.ps1`](cleanup.ps1)
+- [`add-rdp-allow-rule.ps1`](add-rdp-allow-rule.ps1)
+- [`show-vm-admin-password.ps1`](show-vm-admin-password.ps1)
 - [`config.ps1`](config.ps1)
 - [`common.ps1`](common.ps1)
 - [`setup.ps1`](setup.ps1)

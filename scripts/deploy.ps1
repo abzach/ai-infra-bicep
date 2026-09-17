@@ -782,7 +782,12 @@ function Get-DeploymentDesiredStateHash {
     $relativePaths.Add('variables\core.yaml')
     $relativePaths.Add("variables\$EnvironmentSuffix.yaml")
     $relativePaths.Add('scripts\deploy.ps1')
+    $relativePaths.Add('scripts\config.ps1')
+    $relativePaths.Add('scripts\common.ps1')
     $relativePaths.Add('scripts\setup.ps1')
+    $relativePaths.Add('main.ps1')
+    $relativePaths.Add('scripts\add-rdp-allow-rule.ps1')
+    $relativePaths.Add('scripts\show-vm-admin-password.ps1')
     $relativePaths.Add('app\chat.py')
     $relativePaths.Add('app\test.py')
     $relativePaths.Add('app\requirements.txt')
@@ -1151,11 +1156,16 @@ function Test-EnterpriseDeploymentCurrent {
         [Parameter(Mandatory)] [object[]] $AutomationRunbooks,
         [Parameter(Mandatory)] [bool] $VmStartScheduleEnabled,
         [Parameter(Mandatory)] [string] $VmStartScheduleName,
+        [Parameter(Mandatory)] [string] $VmStartScheduleStartTime,
+        [Parameter(Mandatory)] [string] $VmStartScheduleTimeZone,
+        [Parameter(Mandatory)] [bool] $RdpDeployerCleanupScheduleEnabled,
+        [Parameter(Mandatory)] [string] $RdpDeployerCleanupScheduleName,
+        [Parameter(Mandatory)] [string] $RdpDeployerCleanupScheduleStartTime,
+        [Parameter(Mandatory)] [string] $RdpDeployerCleanupScheduleTimeZone,
         [Parameter(Mandatory)] [string] $VnetName,
         [Parameter(Mandatory)] [string] $VmName,
         [Parameter(Mandatory)] [string] $LogAnalyticsWorkspaceName,
-        [Parameter(Mandatory)] [string] $PrimaryModelDeploymentName,
-        [Parameter(Mandatory)] [string] $SecondaryModelDeploymentName,
+        [Parameter(Mandatory)] [object[]] $ModelDeployments,
         [Parameter(Mandatory)] [bool] $PrivateAiWorkspacesOnly,
         [Parameter(Mandatory)] [bool] $VmAutoShutdownEnabled,
         [Parameter(Mandatory)] [string] $ExpectedDesiredStateHash
@@ -1280,8 +1290,12 @@ function Test-EnterpriseDeploymentCurrent {
         foreach ($runbook in $AutomationRunbooks) {
             $resourceChecks += @{ Id = "$coreScope/providers/Microsoft.Automation/automationAccounts/$AutomationAccountName/runbooks/$($runbook.name)"; Description = "Automation runbook '$($runbook.name)'" }
         }
+        $jobSchedules = $null
         if ($VmStartScheduleEnabled) {
             $resourceChecks += @{ Id = "$coreScope/providers/Microsoft.Automation/automationAccounts/$AutomationAccountName/schedules/$VmStartScheduleName"; Description = "Automation schedule '$VmStartScheduleName'" }
+        }
+        if ($RdpDeployerCleanupScheduleEnabled) {
+            $resourceChecks += @{ Id = "$coreScope/providers/Microsoft.Automation/automationAccounts/$AutomationAccountName/schedules/$RdpDeployerCleanupScheduleName"; Description = "Automation schedule '$RdpDeployerCleanupScheduleName'" }
         }
     }
 
@@ -1292,6 +1306,64 @@ function Test-EnterpriseDeploymentCurrent {
     }
 
     if ($AutomationEnabled) {
+        $scheduleChecks = @()
+        if ($VmStartScheduleEnabled) {
+            $scheduleChecks += @{
+                Name = $VmStartScheduleName
+                ExpectedStartTime = $VmStartScheduleStartTime
+                ExpectedTimeZone = $VmStartScheduleTimeZone
+                ExpectedFrequency = 'Day'
+                ExpectedInterval = 1
+            }
+        }
+        if ($RdpDeployerCleanupScheduleEnabled) {
+            $scheduleChecks += @{
+                Name = $RdpDeployerCleanupScheduleName
+                ExpectedStartTime = $RdpDeployerCleanupScheduleStartTime
+                ExpectedTimeZone = $RdpDeployerCleanupScheduleTimeZone
+                ExpectedFrequency = 'Week'
+                ExpectedInterval = 1
+            }
+        }
+        foreach ($scheduleCheck in $scheduleChecks) {
+            $scheduleId = "$coreScope/providers/Microsoft.Automation/automationAccounts/$AutomationAccountName/schedules/$($scheduleCheck.Name)"
+            $scheduleUri = "https://management.azure.com${scheduleId}?api-version=2024-10-23"
+            $scheduleJson = az rest --method get --url $scheduleUri --output json 2>$null
+            if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($scheduleJson)) {
+                Write-Info "  Not current: unable to read Automation schedule '$($scheduleCheck.Name)'."
+                return $false
+            }
+
+            $schedule = $scheduleJson | ConvertFrom-Json
+            $properties = $schedule.properties
+            if ([string]$properties.frequency -ne $scheduleCheck.ExpectedFrequency -or
+                [int]$properties.interval -ne $scheduleCheck.ExpectedInterval -or
+                [string]$properties.timeZone -ne $scheduleCheck.ExpectedTimeZone) {
+                Write-Info "  Not current: Automation schedule '$($scheduleCheck.Name)' has drifted schedule properties."
+                return $false
+            }
+
+            try {
+                $actualStartTime = [DateTimeOffset]::Parse(
+                    [string]$properties.startTime,
+                    [System.Globalization.CultureInfo]::InvariantCulture,
+                    [System.Globalization.DateTimeStyles]::RoundtripKind
+                )
+                $expectedStartTime = [DateTimeOffset]::Parse(
+                    $scheduleCheck.ExpectedStartTime,
+                    [System.Globalization.CultureInfo]::InvariantCulture,
+                    [System.Globalization.DateTimeStyles]::RoundtripKind
+                )
+            } catch {
+                Write-Info "  Not current: Automation schedule '$($scheduleCheck.Name)' has an invalid start time."
+                return $false
+            }
+            if ($actualStartTime.ToUniversalTime() -ne $expectedStartTime.ToUniversalTime()) {
+                Write-Info "  Not current: Automation schedule '$($scheduleCheck.Name)' start time has drifted."
+                return $false
+            }
+        }
+
         foreach ($runbook in $AutomationRunbooks) {
             $runbookId = "$coreScope/providers/Microsoft.Automation/automationAccounts/$AutomationAccountName/runbooks/$($runbook.name)"
             $deployedHash = az resource show --ids $runbookId --query tags.sourceHash --output tsv 2>$null
@@ -1318,13 +1390,30 @@ function Test-EnterpriseDeploymentCurrent {
                 return $false
             }
         }
+        if ($RdpDeployerCleanupScheduleEnabled) {
+            if (-not $jobSchedules) {
+                $jobSchedulesUri = "https://management.azure.com${coreScope}/providers/Microsoft.Automation/automationAccounts/$AutomationAccountName/jobSchedules?api-version=2024-10-23"
+                $jobSchedulesJson = az rest --method get --url $jobSchedulesUri --output json 2>$null
+                if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($jobSchedulesJson)) {
+                    Write-Info '  Not current: unable to read Automation job schedules.'
+                    return $false
+                }
+                $jobSchedules = ($jobSchedulesJson | ConvertFrom-Json).value
+            }
+            $matchingCleanupJob = @($jobSchedules | Where-Object {
+                $_.properties.runbook.name -eq 'delete-rdp-deployer-rule' -and $_.properties.schedule.name -eq $RdpDeployerCleanupScheduleName
+            })
+            if ($matchingCleanupJob.Count -eq 0) {
+                Write-Info "  Not current: runbook 'delete-rdp-deployer-rule' is not linked to schedule '$RdpDeployerCleanupScheduleName'."
+                return $false
+            }
+        }
     }
 
-    if (-not (Test-OpenAiDeploymentCurrent -ResourceGroupName $CoreResourceGroupName -AccountName $OpenAiAccountName -DeploymentName $PrimaryModelDeploymentName)) {
-        return $false
-    }
-    if (-not (Test-OpenAiDeploymentCurrent -ResourceGroupName $CoreResourceGroupName -AccountName $OpenAiAccountName -DeploymentName $SecondaryModelDeploymentName)) {
-        return $false
+    foreach ($modelDeployment in $ModelDeployments) {
+        if (-not (Test-OpenAiDeploymentCurrent -ResourceGroupName $CoreResourceGroupName -AccountName $OpenAiAccountName -DeploymentName $modelDeployment.deploymentName)) {
+            return $false
+        }
     }
 
     Write-Exists '  Existing environment is complete and matches the current desired-state hash.'
@@ -1370,16 +1459,9 @@ $StorageAccessTier               = $config.storageAccessTier
 $StorageBlobSoftDeleteDays       = [int]$config.storageBlobSoftDeleteRetentionDays
 $StorageContainerSoftDeleteDays  = [int]$config.storageContainerSoftDeleteRetentionDays
 $KeyVaultSoftDeleteDays          = [int]$config.keyVaultSoftDeleteRetentionDays
-$ModelDeploymentName             = $config.modelDeploymentName
-$ModelName                       = $config.modelName
-$ModelVersion                    = $config.modelVersion
-$ModelSkuName                    = $config.modelSkuName
-$CapacityK                       = [int]$config.capacityK
-$SecondaryModelDeploymentName    = $config.secondaryModelDeploymentName
-$SecondaryModelName              = $config.secondaryModelName
-$SecondaryModelVersion           = $config.secondaryModelVersion
-$SecondaryModelSkuName           = $config.secondaryModelSkuName
-$SecondaryCapacityK              = [int]$config.secondaryCapacityK
+$ModelDeployments                = @($config.modelDeployments)
+$ModelDeploymentName             = [string]$ModelDeployments[0].deploymentName
+$SecondaryModelDeploymentName    = [string]$ModelDeployments[1].deploymentName
 $AdminActors                  = @($config.adminActors)
 $UserActors                   = @($config.userActors)
 $AdminObjectIds               = @([string]$config.adminObjectIds -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' })
@@ -1408,11 +1490,15 @@ $AutomationAzVersion             = $config.automationAzVersion
 $VmStartScheduleEnabled          = Convert-ToBoolean -Value $config.vmStartScheduleEnabled -Default $true
 $VmStartScheduleTime             = $config.vmStartScheduleTime
 $VmStartScheduleTimeZone         = $config.vmStartScheduleTimeZone
+$RdpDeployerCleanupScheduleEnabled = Convert-ToBoolean -Value $config.rdpDeployerCleanupScheduleEnabled -Default $true
+$RdpDeployerCleanupScheduleTime    = $config.rdpDeployerCleanupScheduleTime
+$RdpDeployerCleanupScheduleTimeZone = $config.rdpDeployerCleanupScheduleTimeZone
 $PrivateAiWorkspacesOnly         = Convert-ToBoolean -Value $config.privateAiWorkspacesOnly -Default $true
 $EnableAuditDiagnostics          = Convert-ToBoolean -Value $config.enableAuditDiagnostics -Default $true
 $LogAnalyticsRetentionDays       = [int]$config.logAnalyticsRetentionDays
 $LogAnalyticsDailyQuotaGb        = $config.logAnalyticsDailyQuotaGb
 $LogAnalyticsWorkspaceName       = $config.lawWorkspaceName
+$ConfiguredRdpAllowedIpCidrs     = @($config.rdpAllowedIpCidrs)
 $desiredStateHash                = Get-DeploymentDesiredStateHash -ScriptRoot $scriptRoot -EnvironmentSuffix $EnvironmentSuffix
 $deploymentName = ("enterprise-$BaseName-$EnvironmentSuffix-$Location-$(Get-Date -Format 'yyyyMMddHHmmss')").ToLower()
 $templatePath = Join-Path $scriptRoot '..\bicep\templates\main.bicep'
@@ -1434,6 +1520,7 @@ $vmManagedIdentityName = $config.vmManagedIdentityName
 $automationManagedIdentityName = $config.automationManagedIdentityName
 $automationAccountName = $config.automationAccountName
 $vmStartScheduleName = $config.vmStartScheduleName
+$rdpDeployerCleanupScheduleName = $config.rdpDeployerCleanupScheduleName
 $legacyManagedIdentityName = $config.legacyManagedIdentityName
 $automationRunbooks = if ($AutomationEnabled) {
     @(Get-AutomationRunbookDescriptors -ScriptRoot $scriptRoot)
@@ -1448,6 +1535,17 @@ $vmStartScheduleStartTime = if ($AutomationEnabled -and $VmStartScheduleEnabled)
         -ScheduleName $vmStartScheduleName `
         -Time $VmStartScheduleTime `
         -TimeZone $VmStartScheduleTimeZone
+} else {
+    ''
+}
+$rdpDeployerCleanupScheduleStartTime = if ($AutomationEnabled -and $RdpDeployerCleanupScheduleEnabled) {
+    Get-AutomationScheduleStartTime `
+        -SubscriptionId $subscriptionId `
+        -ResourceGroupName $CoreResourceGroupName `
+        -AutomationAccountName $automationAccountName `
+        -ScheduleName $rdpDeployerCleanupScheduleName `
+        -Time $RdpDeployerCleanupScheduleTime `
+        -TimeZone $RdpDeployerCleanupScheduleTimeZone
 } else {
     ''
 }
@@ -1485,11 +1583,16 @@ if (-not $WhatIf -and -not $ForceRedeploy -and -not $ForceAppBootstrap) {
         -AutomationRunbooks $automationRunbooks `
         -VmStartScheduleEnabled $VmStartScheduleEnabled `
         -VmStartScheduleName $vmStartScheduleName `
+        -VmStartScheduleStartTime $vmStartScheduleStartTime `
+        -VmStartScheduleTimeZone $VmStartScheduleTimeZone `
+        -RdpDeployerCleanupScheduleEnabled $RdpDeployerCleanupScheduleEnabled `
+        -RdpDeployerCleanupScheduleName $rdpDeployerCleanupScheduleName `
+        -RdpDeployerCleanupScheduleStartTime $rdpDeployerCleanupScheduleStartTime `
+        -RdpDeployerCleanupScheduleTimeZone $RdpDeployerCleanupScheduleTimeZone `
         -VnetName $VnetName `
         -VmName $vmName `
         -LogAnalyticsWorkspaceName $LogAnalyticsWorkspaceName `
-        -PrimaryModelDeploymentName $ModelDeploymentName `
-        -SecondaryModelDeploymentName $SecondaryModelDeploymentName `
+        -ModelDeployments $ModelDeployments `
         -PrivateAiWorkspacesOnly $PrivateAiWorkspacesOnly `
         -VmAutoShutdownEnabled $VmAutoShutdownEnabled `
         -ExpectedDesiredStateHash $desiredStateHash
@@ -1594,15 +1697,36 @@ $deploymentTags = @{
     desiredStateHash = $desiredStateHash
 }
 
-Write-Task 'Detecting public IP address for the VM RDP allow rule...'
-$localPublicIp = Get-PublicIpAddress
-if ([string]::IsNullOrWhiteSpace($localPublicIp)) {
-    Write-Error 'Could not determine the public IP of this machine. Cannot configure restricted RDP access.'
-    exit 1
+$localPublicIp = ''
+if ($DeployVm) {
+    Write-Task 'Detecting public IP address for the VM RDP allow rule...'
+    $localPublicIp = Get-PublicIpAddress
+    if ([string]::IsNullOrWhiteSpace($localPublicIp)) {
+        if ($ConfiguredRdpAllowedIpCidrs.Count -eq 0) {
+            Write-Error 'Could not determine the public IP of this machine and rdpAllowedIpCidrs is empty. Cannot configure restricted RDP access.'
+            exit 1
+        }
+        Write-Info '  Warning: could not detect this machine public IP; using only rdpAllowedIpCidrs from configuration.'
+    } else {
+        Write-Info "  Public IP detected: $localPublicIp"
+    }
+} else {
+    Write-Info '  VM deployment is disabled — no RDP allow rules will be passed to Bicep.'
 }
-$localPublicIpCidr = "$localPublicIp/32"
-$rdpAllowedIpCidrs = @($localPublicIpCidr)
-Write-Info "  Public IP detected: $localPublicIp"
+
+$rdpAllowRules = [System.Collections.Generic.List[object]]::new()
+if ($DeployVm -and $ConfiguredRdpAllowedIpCidrs.Count -gt 0) {
+    $rdpAllowRules.Add(@{
+        name = 'allow-rdp-user'
+        sourceAddressPrefixes = @($ConfiguredRdpAllowedIpCidrs)
+    })
+}
+if ($DeployVm -and -not [string]::IsNullOrWhiteSpace($localPublicIp)) {
+    $rdpAllowRules.Add(@{
+        name = 'allow-rdp-deployer'
+        sourceAddressPrefixes = @($localPublicIp)
+    })
+}
 
 # ----------------------------------------------------------------
 # VM admin password resolution.
@@ -1698,16 +1822,15 @@ $deploymentParameters = @{
             }
         }) }
         adminObjectIds = @{ value = @($AdminObjectIds) }
-        modelDeploymentName = @{ value = $ModelDeploymentName }
-        modelName = @{ value = $ModelName }
-        modelVersion = @{ value = $ModelVersion }
-        modelSkuName = @{ value = $ModelSkuName }
-        capacityK = @{ value = $CapacityK }
-        secondaryModelDeploymentName = @{ value = $SecondaryModelDeploymentName }
-        secondaryModelName = @{ value = $SecondaryModelName }
-        secondaryModelVersion = @{ value = $SecondaryModelVersion }
-        secondaryModelSkuName = @{ value = $SecondaryModelSkuName }
-        secondaryCapacityK = @{ value = $SecondaryCapacityK }
+        modelDeployments = @{ value = @($ModelDeployments | ForEach-Object {
+            @{
+                deploymentName = [string]$_.deploymentName
+                modelName = [string]$_.modelName
+                modelVersion = [string]$_.modelVersion
+                skuName = [string]$_.skuName
+                capacityK = [int]$_.capacityK
+            }
+        }) }
         vmAdminUsername = @{ value = $VmAdminUsername }
         vmAdminPassword = @{ value = $VmAdminPassword }
         vmSize = @{ value = $VmSize }
@@ -1738,9 +1861,12 @@ $deploymentParameters = @{
         vmStartScheduleEnabled = @{ value = $VmStartScheduleEnabled }
         vmStartScheduleStartTime = @{ value = $vmStartScheduleStartTime }
         vmStartScheduleTimeZone = @{ value = $VmStartScheduleTimeZone }
+        rdpDeployerCleanupScheduleEnabled = @{ value = $RdpDeployerCleanupScheduleEnabled }
+        rdpDeployerCleanupScheduleStartTime = @{ value = $rdpDeployerCleanupScheduleStartTime }
+        rdpDeployerCleanupScheduleTimeZone = @{ value = $RdpDeployerCleanupScheduleTimeZone }
         privateAiWorkspacesOnly = @{ value = $PrivateAiWorkspacesOnly }
         logAnalyticsRetentionDays = @{ value = $LogAnalyticsRetentionDays }
-        rdpAllowedIpCidrs = @{ value = $rdpAllowedIpCidrs }
+        rdpAllowRules = @{ value = @($rdpAllowRules) }
         deployingObjectId = @{ value = $deployingObjectId }
         deployingPrincipalType = @{ value = ($accountType -eq 'servicePrincipal' ? 'ServicePrincipal' : 'User') }
         # Passes the original creation date so Bicep can preserve it on the createdDate tag
@@ -2286,6 +2412,25 @@ if ($AutomationEnabled) {
                 resourceGroupName = $CoreResourceGroupName
                 subscriptionId = $subscriptionId
                 vmName = $vmName
+            }
+    }
+    if ($RdpDeployerCleanupScheduleEnabled) {
+        $rdpCleanupJobScheduleName = (Get-DeploymentOutputValue -Outputs $deploymentOutputs -Name 'rdpDeployerCleanupJobScheduleName').Trim()
+        if ([string]::IsNullOrWhiteSpace($rdpCleanupJobScheduleName)) {
+            throw 'The deployment did not return the deterministic RDP cleanup job schedule name.'
+        }
+        Set-AutomationJobSchedule `
+            -SubscriptionId $subscriptionId `
+            -ResourceGroupName $CoreResourceGroupName `
+            -AutomationAccountName $automationAccountName `
+            -JobScheduleName $rdpCleanupJobScheduleName `
+            -ScheduleName $rdpDeployerCleanupScheduleName `
+            -RunbookName 'delete-rdp-deployer-rule' `
+            -RunbookParameters @{
+                automationIdentityClientId = $automationIdentityClientId
+                networkSecurityGroupName = "$vmName-nsg"
+                resourceGroupName = $NetworkResourceGroupName
+                subscriptionId = $subscriptionId
             }
     }
     Write-Info "[Automation runbooks] completed in $($phaseWatch.Elapsed.ToString('mm\:ss'))"

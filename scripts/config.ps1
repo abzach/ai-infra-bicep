@@ -61,6 +61,7 @@ function Get-EnterpriseResourceNames {
         automationManagedIdentityName = "mi-${n}-automation-${env}${sfx}"
         automationAccountName    = "aa-${n}-${env}${sfx}"
         vmStartScheduleName      = 'start-vm-daily'
+        rdpDeployerCleanupScheduleName = 'delete-rdp-deployer-weekly'
         legacyManagedIdentityName = "mi-${n}-${env}${sfx}"
         vnetName                 = "vnet-${n}-${env}${sfx}"
         vmName                   = "vm-${n}-${env}${sfx}"
@@ -243,6 +244,97 @@ In CI, supply the full file content through the '$ContentEnvVarName' environment
         $config['vmPublicIpDnsNameLabel'] = ''
     }
 
+    if (-not $config.Contains('rdpAllowedIpCidrs')) {
+        $config['rdpAllowedIpCidrs'] = @()
+    }
+
+    if (-not $config.Contains('rdpAllowedPublicIpAddress')) {
+        $config['rdpAllowedPublicIpAddress'] = ''
+    }
+
+    $normalizeStringArray = {
+        param([AllowNull()] [object] $RawValue)
+
+        $quoteTrimChars = [char[]]@([char]39, [char]34)
+        $values = [System.Collections.Generic.List[string]]::new()
+        if ($null -eq $RawValue) {
+            return @($values)
+        }
+
+        $items = @()
+        if ($RawValue -is [string]) {
+            $trimmed = $RawValue.Trim()
+            if ([string]::IsNullOrWhiteSpace($trimmed) -or $trimmed -eq '[]') {
+                return @($values)
+            }
+            if ($trimmed.StartsWith('[') -and $trimmed.EndsWith(']')) {
+                try {
+                    $items = @($trimmed | ConvertFrom-Json)
+                } catch {
+                    $items = @($trimmed.Trim('[]') -split ',' | ForEach-Object { $_.Trim().Trim($quoteTrimChars) })
+                }
+            } else {
+                $items = @($trimmed -split ',' | ForEach-Object { $_.Trim() })
+            }
+        } elseif ($RawValue -is [System.Collections.IEnumerable] -and -not ($RawValue -is [string])) {
+            $items = @($RawValue)
+        } else {
+            $items = @($RawValue)
+        }
+
+        foreach ($item in $items) {
+            if ($null -eq $item) { continue }
+            $value = [string]$item
+            $value = $value.Trim().Trim($quoteTrimChars)
+            if (-not [string]::IsNullOrWhiteSpace($value)) {
+                $values.Add($value)
+            }
+        }
+
+        return @($values)
+    }
+
+    $normalizeIpv4SourceAddress = {
+        param(
+            [Parameter(Mandatory)] [string] $Value,
+            [Parameter(Mandatory)] [string] $KeyName
+        )
+
+        $text = $Value.Trim()
+        $parts = $text -split '/', 2
+        $addressText = $parts[0]
+        $prefixLength = if ($parts.Count -eq 2) { $parts[1] } else { $null }
+
+        if ($addressText -notmatch '^\d{1,3}(\.\d{1,3}){3}$') {
+            throw "Invalid IPv4 address or CIDR '$Value' for '$KeyName'. Use values such as 203.0.113.10 or 203.0.113.10/32."
+        }
+        foreach ($octet in ($addressText -split '\.')) {
+            if ([int]$octet -lt 0 -or [int]$octet -gt 255) {
+                throw "Invalid IPv4 address or CIDR '$Value' for '$KeyName'. Each octet must be 0-255."
+            }
+        }
+        if ($null -eq $prefixLength) {
+            return $addressText
+        }
+        if ($prefixLength -notmatch '^\d{1,2}$' -or [int]$prefixLength -lt 0 -or [int]$prefixLength -gt 32) {
+            throw "Invalid CIDR prefix '$prefixLength' for '$KeyName'. IPv4 prefixes must be 0-32."
+        }
+
+        return "$addressText/$([int]$prefixLength)"
+    }
+
+    $rdpAllowedIpCidrs = [System.Collections.Generic.List[string]]::new()
+    if (-not [string]::IsNullOrWhiteSpace([string]$config['rdpAllowedPublicIpAddress'])) {
+        $rdpAllowedIpCidrs.Add((& $normalizeIpv4SourceAddress ([string]$config['rdpAllowedPublicIpAddress']) 'rdpAllowedPublicIpAddress'))
+    }
+    foreach ($cidr in (& $normalizeStringArray $config['rdpAllowedIpCidrs'])) {
+        $normalizedCidr = & $normalizeIpv4SourceAddress $cidr 'rdpAllowedIpCidrs'
+        if (-not $rdpAllowedIpCidrs.Contains($normalizedCidr)) {
+            $rdpAllowedIpCidrs.Add($normalizedCidr)
+        }
+    }
+    $config['rdpAllowedIpCidrs'] = @($rdpAllowedIpCidrs)
+
     # ---- Helper: normalize actor inputs (users/admins) into structured objects ----
     $normalizeActorArray = {
         param(
@@ -335,16 +427,7 @@ In CI, supply the full file content through the '$ContentEnvVarName' environment
         'storageBlobSoftDeleteRetentionDays',
         'storageContainerSoftDeleteRetentionDays',
         'keyVaultSoftDeleteRetentionDays',
-        'modelDeploymentName',
-        'modelName',
-        'modelVersion',
-        'modelSkuName',
-        'capacityK',
-        'secondaryModelDeploymentName',
-        'secondaryModelName',
-        'secondaryModelVersion',
-        'secondaryModelSkuName',
-        'secondaryCapacityK',
+        'modelDeployments',
         'openaiApiVersion',
         'mlApiVersion',
         'vmAdminUsername',
@@ -370,6 +453,9 @@ In CI, supply the full file content through the '$ContentEnvVarName' environment
         'vmStartScheduleEnabled',
         'vmStartScheduleTime',
         'vmStartScheduleTimeZone',
+        'rdpDeployerCleanupScheduleEnabled',
+        'rdpDeployerCleanupScheduleTime',
+        'rdpDeployerCleanupScheduleTimeZone',
         'privateAiWorkspacesOnly',
         'enableAuditDiagnostics',
         'logAnalyticsRetentionDays',
@@ -406,8 +492,6 @@ In CI, supply the full file content through the '$ContentEnvVarName' environment
 
     # ---- Validate integer fields ----
     $integerKeys = @(
-        'capacityK',
-        'secondaryCapacityK',
         'storageBlobSoftDeleteRetentionDays',
         'storageContainerSoftDeleteRetentionDays',
         'keyVaultSoftDeleteRetentionDays',
@@ -465,6 +549,7 @@ In CI, supply the full file content through the '$ContentEnvVarName' environment
         'deployVm',
         'deployAutomation',
         'vmStartScheduleEnabled',
+        'rdpDeployerCleanupScheduleEnabled',
         'privateAiWorkspacesOnly',
         'enableAuditDiagnostics'
     )
@@ -491,6 +576,9 @@ In CI, supply the full file content through the '$ContentEnvVarName' environment
     if ((& $isFlagEnabled 'vmStartScheduleEnabled') -and -not (& $isFlagEnabled 'deployAutomation')) {
         throw "vmStartScheduleEnabled requires deployAutomation because the schedule lives in the Automation Account."
     }
+    if ((& $isFlagEnabled 'rdpDeployerCleanupScheduleEnabled') -and -not (& $isFlagEnabled 'deployAutomation')) {
+        throw "rdpDeployerCleanupScheduleEnabled requires deployAutomation because the schedule lives in the Automation Account."
+    }
     if ((& $isFlagEnabled 'vmAutoShutdownEnabled') -and -not (& $isFlagEnabled 'deployVm')) {
         throw "vmAutoShutdownEnabled requires deployVm because the schedule targets the jumpbox VM."
     }
@@ -507,20 +595,50 @@ In CI, supply the full file content through the '$ContentEnvVarName' environment
     if ([int]$config['logAnalyticsRetentionDays'] -lt 30 -or [int]$config['logAnalyticsRetentionDays'] -gt 730) {
         throw "logAnalyticsRetentionDays must be 30-730"
     }
-    if ([int]$config['capacityK'] -lt 1 -or [int]$config['secondaryCapacityK'] -lt 1) {
-        throw "capacityK and secondaryCapacityK must be positive integers"
+    $modelDeployments = @($config['modelDeployments'])
+    if ($modelDeployments.Count -lt 2) {
+        throw 'modelDeployments must contain at least two entries because the chat app uses primary and secondary deployments'
     }
+    $modelDeploymentNames = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    $normalizedModelDeployments = [System.Collections.Generic.List[object]]::new()
+    foreach ($modelDeployment in $modelDeployments) {
+        $modelValues = [ordered]@{}
+        foreach ($propertyName in @('deploymentName', 'modelName', 'modelVersion', 'skuName', 'capacityK')) {
+            $propertyValue = if ($modelDeployment -is [System.Collections.IDictionary] -and $modelDeployment.Contains($propertyName)) {
+                $modelDeployment[$propertyName]
+            } elseif ($modelDeployment.PSObject.Properties[$propertyName]) {
+                $modelDeployment.$propertyName
+            } else {
+                $null
+            }
+            if ([string]::IsNullOrWhiteSpace([string]$propertyValue)) {
+                throw "Each modelDeployments entry must define deploymentName, modelName, modelVersion, skuName, and capacityK"
+            }
+            $modelValues[$propertyName] = $propertyValue
+        }
+        if ([string]$modelValues.deploymentName -notmatch '^[A-Za-z0-9._-]+$') {
+            throw "Invalid model deployment name '$($modelValues.deploymentName)'"
+        }
+        if (-not $modelDeploymentNames.Add([string]$modelValues.deploymentName)) {
+            throw "modelDeployments contains duplicate deployment name '$($modelValues.deploymentName)'"
+        }
+        if ([string]$modelValues.capacityK -notmatch '^\d+$' -or [int]$modelValues.capacityK -lt 1) {
+            throw "Model deployment '$($modelValues.deploymentName)' capacityK must be a positive integer"
+        }
+        $normalizedModelDeployments.Add([pscustomobject]$modelValues)
+    }
+    $config['modelDeployments'] = @($normalizedModelDeployments)
     if ([int]$config['vmSpotMaxPrice'] -lt -1) {
         throw "vmSpotMaxPrice must be -1 or a nonnegative whole number"
-    }
-    if ([string]$config['modelDeploymentName'] -eq [string]$config['secondaryModelDeploymentName']) {
-        throw "modelDeploymentName and secondaryModelDeploymentName must be different"
     }
     if ([string]$config['vmAutoShutdownTime'] -notmatch '^([01]\d|2[0-3])[0-5]\d$') {
         throw "vmAutoShutdownTime must use 24-hour HHmm format"
     }
     if ([string]$config['vmStartScheduleTime'] -notmatch '^([01]\d|2[0-3])[0-5]\d$') {
         throw "vmStartScheduleTime must use 24-hour HHmm format"
+    }
+    if ([string]$config['rdpDeployerCleanupScheduleTime'] -notmatch '^([01]\d|2[0-3])[0-5]\d$') {
+        throw "rdpDeployerCleanupScheduleTime must use 24-hour HHmm format"
     }
     if ([string]$config['automationRuntimeVersion'] -ne '7.4') {
         throw "automationRuntimeVersion must be 7.4"

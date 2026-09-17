@@ -1,5 +1,10 @@
 metadata description = 'Virtual network, private DNS zones, and VM networking resources.'
 
+type rdpAllowRuleConfig = {
+  name: 'allow-rdp-deployer' | 'allow-rdp-user'
+  sourceAddressPrefixes: string[]
+}
+
 @description('Virtual network name.')
 param vnetName string
 
@@ -21,8 +26,8 @@ param tags object = {}
 @description('VM name used as a prefix for network resource names.')
 param vmName string
 
-@description('IPv4 CIDRs allowed to RDP into the VM (for example: 203.0.113.10/32). Leave empty to block all RDP.')
-param rdpAllowedIpCidrs array = []
+@description('Named RDP allow rules for the deployer and configured user addresses.')
+param rdpAllowRules rdpAllowRuleConfig[] = []
 
 @description('Enable accelerated networking on the VM network interface.')
 param acceleratedNetworkingEnabled bool = true
@@ -32,6 +37,9 @@ param deployVmNetworking bool = true
 
 @description('Optional DNS name label for the VM public IP. Leave empty to skip a public DNS name.')
 param publicIpDnsNameLabel string = ''
+
+@description('Automation managed identity principal ID granted Network Contributor on the jumpbox NSG. Leave empty to skip.')
+param automationPrincipalId string = ''
 
 var subnets = [
   {
@@ -175,14 +183,14 @@ resource publicIpWithDns 'Microsoft.Network/publicIPAddresses@2024-01-01' = if (
   }
 }
 
-var rdpAllowRules = [for (cidr, i) in rdpAllowedIpCidrs: {
-  name: 'allow-rdp-from-${replace(replace(cidr, '.', '-'), '/', '-')}'
+var rdpSecurityRules = [for (rule, i) in rdpAllowRules: {
+  name: rule.name
   properties: {
     access: 'Allow'
     direction: 'Inbound'
     priority: 200 + i
     protocol: 'Tcp'
-    sourceAddressPrefix: cidr
+    sourceAddressPrefixes: rule.sourceAddressPrefixes
     sourcePortRange: '*'
     destinationAddressPrefix: '*'
     destinationPortRange: '3389'
@@ -210,7 +218,17 @@ resource networkSecurityGroup 'Microsoft.Network/networkSecurityGroups@2024-01-0
   location: location
   tags: tags
   properties: {
-    securityRules: concat(rdpAllowRules, rdpDenyRule)
+    securityRules: concat(rdpSecurityRules, rdpDenyRule)
+  }
+}
+
+resource automationNsgContributorRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (deployVmNetworking && !empty(automationPrincipalId)) {
+  name: guid(networkSecurityGroup!.id, automationPrincipalId, '4d97b98b-1d4f-4787-a291-c67834d212e7')
+  scope: networkSecurityGroup
+  properties: {
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '4d97b98b-1d4f-4787-a291-c67834d212e7')
+    principalId: automationPrincipalId
+    principalType: 'ServicePrincipal'
   }
 }
 

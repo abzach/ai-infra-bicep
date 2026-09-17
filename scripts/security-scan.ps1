@@ -159,6 +159,13 @@ foreach ($automationVmRole in $automationVmRoles) {
     Test-Rule -Condition ([string]$automationVmRole.scope -match 'Microsoft.Compute/virtualMachines') -Message 'Automation VM Contributor is scoped to the VM.' -Failures $failures
 }
 
+$networkContributorRoleId = '4d97b98b-1d4f-4787-a291-c67834d212e7'
+$automationNsgRoles = @($roleAssignments | Where-Object { [string]$_.properties.roleDefinitionId -match $networkContributorRoleId })
+Test-Rule -Condition ($automationNsgRoles.Count -eq 1) -Message 'Automation has exactly one Network Contributor assignment.' -Failures $failures
+foreach ($automationNsgRole in $automationNsgRoles) {
+    Test-Rule -Condition ([string]$automationNsgRole.scope -match 'Microsoft.Network/networkSecurityGroups') -Message 'Automation Network Contributor is scoped to the jumpbox NSG.' -Failures $failures
+}
+
 $diagnosticSettings = Get-ResourcesOfType -Resources $resources -Type 'Microsoft.Insights/diagnosticSettings'
 Test-Rule -Condition ($diagnosticSettings.Count -ge 2) -Message 'Azure OpenAI and AI Hub diagnostic settings are present.' -Failures $failures
 foreach ($diagnosticSetting in $diagnosticSettings) {

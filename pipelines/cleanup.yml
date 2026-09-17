@@ -41,12 +41,12 @@ stages:
     dependsOn: Preview
     jobs:
       - job: Destroy
-        displayName: Delete resource groups
+        displayName: Delete environment resources
         pool:
           vmImage: ubuntu-latest
         steps:
           - task: AzureCLI@2
-            displayName: Delete resource groups
+            displayName: Delete environment resources
             inputs:
               azureSubscription: $(serviceConnection)
               scriptType: pscore

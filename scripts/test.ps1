@@ -165,11 +165,7 @@ $config = Read-EnterpriseEnvironmentConfig -ScriptRoot $scriptRoot -EnvironmentS
 if ($Mode -eq 'Smoke') {
     $Location              = $config.location
     $CoreResourceGroupName = $config.coreResourceGroupName
-    $ModelDeploymentName   = $config.modelDeploymentName
-    $CapacityK             = [int]$config.capacityK
-    $ModelName             = $config.modelName
-    $ModelVersion          = $config.modelVersion
-    $ModelSkuName          = $config.modelSkuName
+    $ModelDeployments      = @($config.modelDeployments)
     $MlApiVersion          = $config.mlApiVersion
     $OpenaiApiVersion      = $config.openaiApiVersion
     $keyVaultName          = $config.keyVaultName
@@ -228,20 +224,22 @@ if ($Mode -eq 'Smoke') {
         }
     }
 
-    Write-Task "Creating model deployment '$ModelDeploymentName' on '$openAiAccountName'..."
-    az cognitiveservices account deployment create `
-        --resource-group $CoreResourceGroupName `
-        --name $openAiAccountName `
-        --deployment-name $ModelDeploymentName `
-        --model-name $ModelName `
-        --model-version $ModelVersion `
-        --model-format OpenAI `
-        --sku-capacity $CapacityK `
-        --sku-name $ModelSkuName
+    foreach ($modelDeployment in $ModelDeployments) {
+        Write-Task "Ensuring model deployment '$($modelDeployment.deploymentName)' exists on '$openAiAccountName'..."
+        az cognitiveservices account deployment create `
+            --resource-group $CoreResourceGroupName `
+            --name $openAiAccountName `
+            --deployment-name $modelDeployment.deploymentName `
+            --model-name $modelDeployment.modelName `
+            --model-version $modelDeployment.modelVersion `
+            --model-format OpenAI `
+            --sku-capacity ([int]$modelDeployment.capacityK) `
+            --sku-name $modelDeployment.skuName
 
-    if ($LASTEXITCODE -ne 0) {
-        Write-Needed 'Smoke test failed: model deployment creation failed.'
-        exit 1
+        if ($LASTEXITCODE -ne 0) {
+            Write-Needed "Smoke test failed: model deployment '$($modelDeployment.deploymentName)' creation failed."
+            exit 1
+        }
     }
 
     Write-Task 'Step 2/3: Validating deployed resources...'
@@ -406,6 +404,15 @@ if ($Mode -eq 'Validate' -or $Mode -eq 'Smoke') {
                 Write-Needed "Fail: daily VM start schedule '$($config.vmStartScheduleName)' is missing or incorrect"; $passed = $false
             } else {
                 Write-Exists "Pass: daily VM start schedule '$($config.vmStartScheduleName)' exists"
+            }
+        }
+        if ($config.rdpDeployerCleanupScheduleEnabled -eq 'true') {
+            $scheduleUri = "$automationAccountResourceUri/schedules/$($config.rdpDeployerCleanupScheduleName)`?api-version=2024-10-23"
+            $schedule = az rest --method get --url $scheduleUri --output json 2>$null | ConvertFrom-Json
+            if (-not $schedule -or $schedule.properties.frequency -ne 'Week' -or $schedule.properties.timeZone -ne $config.rdpDeployerCleanupScheduleTimeZone) {
+                Write-Needed "Fail: weekly RDP cleanup schedule '$($config.rdpDeployerCleanupScheduleName)' is missing or incorrect"; $passed = $false
+            } else {
+                Write-Exists "Pass: weekly RDP cleanup schedule '$($config.rdpDeployerCleanupScheduleName)' exists"
             }
         }
     }

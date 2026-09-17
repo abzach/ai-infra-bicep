@@ -5,7 +5,7 @@ Consolidated multi-stage pipelines are provided with runtime parameter selection
 | Pipeline | Trigger | Purpose |
 |---|---|---|
 | `deploy.yml` | Manual | Security gate, planning (What-If), deployment, and validation for selected environment (`dev`/`uat`) |
-| `cleanup.yml` | Manual | Preview (What-If) and guarded deletion of resource groups for selected environment (`dev`/`uat`) |
+| `cleanup.yml` | Manual | Preview and guarded resource deletion for selected environment (`dev`/`uat`), preserving Key Vault and the VM OS disk |
 
 Each pipeline reads its variables from a variable group named `ai-infra-<environment>` because `variables/*.yaml` is intentionally untracked. The group must define:
 

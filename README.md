@@ -12,6 +12,7 @@ The deployment is secure by default:
 - Private endpoints and private DNS provide service connectivity.
 - Entra ID and resource-scoped RBAC are used instead of service keys.
 - The jumpbox uses Trusted Launch and RDP is restricted to the deployer IP.
+- Automation permissions are limited to the individual VM and NSG used by its scheduled runbooks.
 - Local configuration and credentials are git-ignored.
 
 This project is released under the [MIT License](LICENSE).
@@ -35,6 +36,29 @@ $PSVersionTable.PSVersion
 az login
 ```
 
+## Root commands
+
+Use `main.ps1` from the repository root for the common environment actions:
+
+| Command | Behavior |
+|---|---|
+| `./main.ps1 dev-connect` | Refreshes `allow-rdp-user` and temporary `allow-rdp-deployer`, then securely reads the dev VM password from private Key Vault through the VM. Does not deploy. |
+| `./main.ps1 dev-deploy` | Runs the dev deployment. |
+| `./main.ps1 dev-clean` | Deletes dev resources except Key Vault and the VM OS disk; prompts unless `-Force` is supplied. |
+| `./main.ps1 uat-connect` | Refreshes `allow-rdp-user` and temporary `allow-rdp-deployer`, then securely reads the UAT VM password from private Key Vault through the VM. Does not deploy. |
+| `./main.ps1 uat-deploy` | Runs the UAT deployment. |
+| `./main.ps1 uat-clean` | Deletes UAT resources except Key Vault and the VM OS disk; prompts unless `-Force` is supplied. |
+
+```mermaid
+flowchart LR
+   Deploy[dev/uat-deploy] --> Bicep[deploy.ps1 and Bicep]
+   Bicep --> Publish[Publish runbooks and link schedules]
+   Deploy --> Rdp[Refresh temporary deployer RDP rule]
+   Connect[dev/uat-connect] --> Rdp
+   Connect --> Password[Read password through VM managed identity]
+   Clean[dev/uat-clean] --> Preserve[Delete resources; preserve Key Vault and OS disk]
+```
+
 ## Deploy locally
 
 1. Clone the repository and open PowerShell in its root folder.
@@ -46,18 +70,21 @@ az login
    ```
 
 3. Edit `variables\core.yaml` and `variables\dev.yaml`. At minimum, set a
-   short `baseName` and an Entra object ID in `admin`. Keep these files local;
-   they are intentionally ignored by Git.
+   short `baseName` and an Entra object ID in `admin`. Add one stable RDP
+   source address to `rdpAllowedPublicIpAddress`, or several addresses/ranges
+   to `rdpAllowedIpCidrs`; deployment also includes your detected public IP for
+   the VM allow rule. Keep these files local; they are intentionally ignored by
+   Git.
 4. Preview the deployment:
 
    ```powershell
-   .\scripts\deploy.ps1 -EnvironmentSuffix dev -WhatIf
+   .\main.ps1 dev-deploy -WhatIf
    ```
 
 5. Deploy:
 
    ```powershell
-   .\scripts\deploy.ps1 -EnvironmentSuffix dev
+   .\main.ps1 dev-deploy
    ```
 
 The same commands work for `uat` after creating `variables\uat.yaml` from its
@@ -69,6 +96,13 @@ credential output is written only under the ignored `.local\` folder.
 ## Use the environment
 
 When the jumpbox is enabled, connect with RDP from the approved source IP.
+To update an already-deployed NSG after your public IP changes, preview and run:
+
+```powershell
+.\main.ps1 dev-connect -WhatIf
+.\main.ps1 dev-connect
+```
+
 The `AI Chat` desktop shortcut starts the managed-identity Python chat app.
 If first-run setup did not start, run:
 
@@ -102,11 +136,11 @@ git diff --check
 
 For a deployed environment, use the applicable `Validate`, `Smoke`, and
 `ChatDual` modes described in [scripts/README.md](scripts/README.md).
-Cleanup is destructive; preview it first and run it only with explicit
-authorization:
+Cleanup is destructive but preserves the environment Key Vault and VM OS disk.
+Preview it first and run it only with explicit authorization:
 
 ```powershell
-.\scripts\cleanup.ps1 -EnvironmentSuffix dev -WhatIf
+.\main.ps1 dev-clean -WhatIf
 ```
 
 ## Where to find more detail

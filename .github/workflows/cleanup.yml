@@ -58,7 +58,7 @@ jobs:
         run: ./scripts/cleanup.ps1 -EnvironmentSuffix ${{ inputs.environment }} -WhatIf
 
   destroy:
-    name: Delete resource groups
+    name: Delete environment resources
     needs: preview
     runs-on: ubuntu-latest
     steps:
@@ -91,7 +91,7 @@ jobs:
           tenant-id: ${{ secrets[steps.azure-login-secrets.outputs.tenantIdSecretName] }}
           subscription-id: ${{ secrets[steps.azure-login-secrets.outputs.subscriptionIdSecretName] }}
 
-      - name: Delete resource groups
+      - name: Delete environment resources
         shell: pwsh
         env:
           AI_INFRA_CORE_YAML: ${{ secrets.AI_INFRA_CORE_YAML }}

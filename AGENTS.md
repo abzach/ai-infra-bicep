@@ -9,13 +9,16 @@ This repository deploys a private Azure AI Foundry learning environment with sta
 - `bicep/templates/main.bicep` is the subscription-scope entry point.
 - `bicep/modules/` contains resource-focused Bicep modules.
 - `variables/core.yaml` contains shared non-SKU defaults.
-- `variables/dev.yaml` and `variables/uat.yaml` contain environment naming, identity, SKU, capacity, and pipeline values.
+- `variables/dev.yaml` and `variables/uat.yaml` contain environment naming, identity, SKU, capacity, RDP allowlist, and pipeline values.
 - `scripts/config.ps1` merges and validates YAML configuration.
 - `scripts/deploy.ps1` non-interactively updates Bicep, validates Azure context, exits early for already-current environments, deploys Bicep when needed, publishes runbooks before linking schedules, writes Key Vault secrets through ARM, bootstraps the VM through Run Command, applies the VM password, and emits a timing summary for performance tuning.
 - `automation/` contains PowerShell runbooks automatically validated and published by `scripts/deploy.ps1`.
 - `scripts/test.ps1` provides `Static`, `Validate`, `Smoke`, and `ChatDual` modes; static Bicep builds use the platform temporary directory so local and Linux CI runs behave consistently.
 - `scripts/security-scan.ps1` validates generated IaC security invariants.
-- `scripts/cleanup.ps1` deletes only tag-validated environment resource groups.
+- `scripts/cleanup.ps1` deletes resources from tag-validated environment resource groups while preserving Key Vault and the VM OS disk.
+- `main.ps1` dispatches `dev|uat-connect`, `dev|uat-deploy`, and `dev|uat-clean` operations.
+- `scripts/add-rdp-allow-rule.ps1` updates the deployed jumpbox NSG with explicit RDP allow rules from `rdpAllowedPublicIpAddress`, `rdpAllowedIpCidrs`, an explicit IP/CIDR, or the current public IP.
+- `scripts/show-vm-admin-password.ps1` uses VM Run Command and the VM managed identity to read the admin password through the private Key Vault endpoint without workstation data-plane access or repository logging.
 - `app/` contains the managed-identity Python chat and connectivity test.
 - `.mcp.json` and `.vscode/mcp.json` register the official Bicep MCP server (`Azure.Bicep.McpServer` via `dnx`) for schema lookups, best practices, diagnostics, formatting, AVM metadata, and ARM decompilation, and the Azure MCP server (`@azure/mcp`) for live subscription reads; see `.github/instructions/bicep-mcp-server.instructions.md` and `.github/instructions/azure-mcp-server.instructions.md`.
 
@@ -25,9 +28,10 @@ This repository deploys a private Azure AI Foundry learning environment with sta
 - Keep Storage shared-key access, blob public access, and Azure OpenAI local authentication disabled.
 - Use private endpoints and private DNS for service data-plane access.
 - Use resource-scoped data-plane RBAC. The VM needs only `Key Vault Secrets User` and `Cognitive Services OpenAI User`; it does not need Storage access for bootstrap.
-- The Automation Account uses its dedicated user-assigned identity, and the VM-start runbook receives Virtual Machine Contributor only at the VM scope.
+- The Automation Account uses its dedicated user-assigned identity. The VM-start runbook receives Virtual Machine Contributor at VM scope, and the weekly RDP cleanup runbook receives Network Contributor at NSG scope.
 - Keep Trusted Launch, Secure Boot, vTPM, and `Windows_Client` licensing on the selected Windows image.
 - Restrict RDP to explicitly supplied/detected CIDRs and retain the deny-all RDP rule.
+- Keep Automation Network Contributor scoped to the jumpbox NSG so weekly cleanup can remove only `allow-rdp-deployer`.
 - Do not reintroduce workstation Key Vault or Storage data-plane operations. The deployment host writes secret resources through ARM; app files reach the VM through Run Command.
 - Never print or persist VM credentials in CI logs or workspaces. Local credential output belongs only under ignored `.local/`.
 - Never rotate the VM admin password on a rerun. A new password is issued only on first deploy, when the VM is being recreated, or when `-RotateVmPassword` is passed.
@@ -37,7 +41,7 @@ This repository deploys a private Azure AI Foundry learning environment with sta
 ## Configuration rules
 
 - Put shared behavior and non-SKU defaults in `variables/core.yaml`.
-- Put every SKU, capacity, environment identity, environment naming choice, and public IP DNS label in `variables/dev.yaml` or `variables/uat.yaml`.
+- Put every SKU, capacity, environment identity, environment naming choice, public IP DNS label, and RDP allowlist IP/CIDR in `variables/dev.yaml` or `variables/uat.yaml`.
 - Add an inline comment to every YAML variable describing purpose and allowed values.
 - Wire new settings through `scripts/config.ps1`, `bicep/templates/main.bicep`, affected modules, `main.bicepparam`, the matching `variables/*.yaml.example` templates, tests, and documentation.
 - Keep placeholders, not values, in `.example` templates, and keep the `adminObjectIds` placeholder validation working.

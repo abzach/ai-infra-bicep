@@ -1,4 +1,18 @@
-metadata description = 'Azure OpenAI account with GPT-4.1 mini and GPT-4.1 nano deployments.'
+metadata description = 'Azure OpenAI account with repository-configured model deployments.'
+
+type modelDeploymentConfig = {
+  @description('Deployment alias used by clients.')
+  deploymentName: string
+  @description('Exact model catalog name.')
+  modelName: string
+  @description('Exact model version.')
+  modelVersion: string
+  @description('Provisioning SKU supported by the model and region.')
+  skuName: string
+  @description('Tokens-per-minute capacity in thousands.')
+  @minValue(1)
+  capacityK: int
+}
 
 @description('Azure OpenAI account name. Must be globally unique.')
 param openAiAccountName string
@@ -6,37 +20,9 @@ param openAiAccountName string
 @description('Azure region.')
 param location string
 
-@description('Deployment name for the primary model (GPT-4.1 mini).')
-param modelDeploymentName string = 'gpt-4-1-mini'
-
-@description('Model family name for the primary deployment (e.g. gpt-4.1-mini).')
-param modelName string = 'gpt-4.1-mini'
-
-@description('Model version for the primary deployment (e.g. 2025-04-14).')
-param modelVersion string = '2025-04-14'
-
-@description('Provisioning SKU for the primary deployment (e.g. GlobalStandard).')
-param modelSkuName string = 'GlobalStandard'
-
-@description('Tokens-per-minute capacity in thousands for the primary deployment.')
-@minValue(1)
-param capacityK int = 10
-
-@description('Deployment name for the secondary model (GPT-4.1 nano).')
-param secondaryModelDeploymentName string = 'gpt-4-1-nano'
-
-@description('Model family name for the secondary deployment (e.g. gpt-4.1-nano).')
-param secondaryModelName string = 'gpt-4.1-nano'
-
-@description('Model version for the secondary deployment (e.g. 2025-04-14).')
-param secondaryModelVersion string = '2025-04-14'
-
-@description('Provisioning SKU for the secondary deployment (e.g. GlobalStandard).')
-param secondaryModelSkuName string = 'GlobalStandard'
-
-@description('Tokens-per-minute capacity in thousands for the secondary deployment.')
-@minValue(1)
-param secondaryCapacityK int = 8
+@description('One or more Azure OpenAI model deployments. The first two are exposed to the chat app as its primary and secondary models.')
+@minLength(2)
+param modelDeployments modelDeploymentConfig[]
 
 @description('Log Analytics workspace resource ID used for diagnostics. Leave empty to skip diagnostic settings.')
 param logAnalyticsWorkspaceResourceId string = ''
@@ -86,41 +72,26 @@ resource openAiDiagnostics 'Microsoft.Insights/diagnosticSettings@2021-05-01-pre
   }
 }
 
-resource primaryModelDeployment 'Microsoft.CognitiveServices/accounts/deployments@2024-10-01' = {
+@batchSize(1)
+resource modelDeploymentResources 'Microsoft.CognitiveServices/accounts/deployments@2024-10-01' = [for modelDeployment in modelDeployments: {
   parent: openAiAccount
-  name: modelDeploymentName
+  name: modelDeployment.deploymentName
   sku: {
-    name: modelSkuName
-    capacity: capacityK
+    name: modelDeployment.skuName
+    capacity: modelDeployment.capacityK
   }
   properties: {
     model: {
       format: 'OpenAI'
-      name: modelName
-      version: modelVersion
+      name: modelDeployment.modelName
+      version: modelDeployment.modelVersion
     }
   }
-}
-
-resource secondaryModelDeployment 'Microsoft.CognitiveServices/accounts/deployments@2024-10-01' = {
-  parent: openAiAccount
-  name: secondaryModelDeploymentName
-  sku: {
-    name: secondaryModelSkuName
-    capacity: secondaryCapacityK
-  }
-  properties: {
-    model: {
-      format: 'OpenAI'
-      name: secondaryModelName
-      version: secondaryModelVersion
-    }
-  }
-  dependsOn: [primaryModelDeployment]
-}
+}]
 
 output id string = openAiAccount.id
 output name string = openAiAccount.name
 output endpoint string = openAiAccount.properties.endpoint
-output deploymentName string = primaryModelDeployment.name
-output secondaryDeploymentName string = secondaryModelDeployment.name
+output deploymentNames string[] = [for index in range(0, length(modelDeployments)): modelDeploymentResources[index].name]
+output deploymentName string = modelDeploymentResources[0].name
+output secondaryDeploymentName string = modelDeploymentResources[1].name

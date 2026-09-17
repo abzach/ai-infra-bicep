@@ -1,6 +1,7 @@
 ﻿# Repository index
 
 - [Project overview and deployment guide](README.md)
+- [Root command dispatcher](main.ps1)
 - [Architecture & deep documentation catalog](docs/README.md)
 - [Architecture documentation index](docs/index.md)
 - [Contributor and coding-agent guidance](AGENTS.md)

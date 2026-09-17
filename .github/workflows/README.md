@@ -6,7 +6,7 @@ Consolidated workflows with runtime environment choice (`dev` or `uat`):
 |---|---|---|---|
 | `ci.yml` | `push` (to `main`), `pull_request` (to `main`), manual | None | Automated free CI tests (Bicep build/lint, security scan, AI safety/prompt injection scan, Python check) |
 | `deploy.yml` | `workflow_dispatch` (Manual) | `environment: [dev, uat]` | Preview (What-If), deploy Bicep infrastructure, and validate the environment |
-| `cleanup.yml` | `workflow_dispatch` (Manual) | `environment: [dev, uat]` | Preview (What-If) and delete tag-validated resource groups |
+| `cleanup.yml` | `workflow_dispatch` (Manual) | `environment: [dev, uat]` | Preview and delete resources in tag-validated groups while preserving Key Vault and the VM OS disk |
 
 Both workflows authenticate with GitHub OIDC. Before each login, they read the selected environment YAML from `AI_INFRA_ENV_YAML` and use its configured GitHub secret names for the client ID, tenant ID, and subscription ID. Cleanup is destructive after its preview job and should be protected with GitHub environments or equivalent approval controls.
 

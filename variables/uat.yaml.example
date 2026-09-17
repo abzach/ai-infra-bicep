@@ -4,10 +4,11 @@
 # locally. Keep every environment-specific value here rather than in code or documentation.
 
 variables:
+  # Resource prefix
   environmentSuffix: uat # Environment token used in names and tags; allowed value in this file: uat.
   baseName: <REPLACE_WITH_SHORT_PREFIX> # Short lowercase naming prefix; 1-10 alphanumeric characters, kept short for the 24-character storage-name limit.
 
-  # ---- Component deployment flags (override core.yaml) -----------------------------------
+  # Deployment flags
   # true  -> deployed and kept current. false -> removed by the next deploy.ps1 run.
   # Key Vault, networking, Azure OpenAI, and the managed identities have no flag and are never removed.
   deployStorage: true # Storage account, blob container, and blob private endpoint; allowed values: true, false. Must be true when deployAiFoundry is true.
@@ -16,30 +17,71 @@ variables:
   deployVm: true # Jumpbox VM with NIC, public IP, NSG, OS disk, and auto-shutdown schedule; allowed values: true, false. Setting false also deletes the OS disk.
   deployAutomation: true # Automation Account, its identity, and repository runbooks; allowed values: true, false. Must be false when deployVm is false.
 
+  # Admins
+  # Supply array of Entra ID object IDs (users or security groups) for role assignments.
+  # Template-assigned RBAC role names:
+  # - Key Vault: Key Vault Administrator, Key Vault Secrets Officer
+  # - Storage Account: Storage Blob Data Owner, Storage Account Contributor
+  # - Azure OpenAI: Cognitive Services OpenAI Contributor, Cognitive Services Contributor
+  # - AI Hub and AI Project: Azure AI Administrator
+  # - Jumpbox VM: Virtual Machine Administrator Login
+  # - Log Analytics: Log Analytics Contributor, Monitoring Contributor
+  # - Core and network resource groups: Contributor, User Access Administrator
+  # Leave empty [] to skip admin role assignments.
+  admin:
+    - objectId: '<REPLACE_WITH_ENTRA_OBJECT_ID>'
+      principalType: 'Group' # Allowed values: User, Group, ServicePrincipal.
+
+  # Users
+  # Key Vault Secrets User, Key Vault Secrets Officer, Key Vault Reader
+  # Storage Blob Data Contributor
+  # Cognitive Services OpenAI User, Cognitive Services User
+  # Azure AI Developer, AzureML Data Scientist
+  # Virtual Machine User Login
+  # Log Analytics Reader, Monitoring Reader
+  # Reader
+  # Leave empty [] to skip user role assignments.
+  user: []
+
+  # Configuration
+  location: eastus # Azure region for this environment; use a supported region name.
   skuName: Standard_LRS # Storage redundancy SKU; allowed values: Standard_LRS, Standard_GRS, Standard_ZRS.
-  modelSkuName: GlobalStandard # Primary model deployment SKU; commonly GlobalStandard, DataZoneStandard, or Standard when supported.
-  secondaryModelSkuName: GlobalStandard # Secondary model deployment SKU; must be supported by the selected model and region.
-  capacityK: 20 # Primary model throughput in thousands of tokens per minute; allowed value depends on model/SKU quota.
-  secondaryCapacityK: 10 # Secondary model throughput in thousands of tokens per minute; allowed value depends on model/SKU quota.
+  storageAccessTier: Hot # Blob access tier; allowed values: Hot, Cool.
+  modelDeployments: # Ordered model deployments; the first two are the chat app primary and secondary, and more entries may be added.
+    - deploymentName: gpt-4-1-mini # Unique deployment alias used by clients.
+      modelName: gpt-4.1-mini # Exact model catalog name available in location.
+      modelVersion: 2025-04-14 # Exact model version available in location.
+      skuName: GlobalStandard # Deployment SKU supported by the model and region.
+      capacityK: 20 # Throughput in thousands of tokens per minute; must be positive and fit quota.
+    - deploymentName: gpt-4-1-nano # Unique secondary deployment alias used by the chat app.
+      modelName: gpt-4.1-nano # Exact secondary model catalog name available in location.
+      modelVersion: 2025-04-14 # Exact secondary model version available in location.
+      skuName: GlobalStandard # Deployment SKU supported by the model and region.
+      capacityK: 10 # Throughput in thousands of tokens per minute; must be positive and fit quota.
+  openaiApiVersion: 2025-01-01-preview # Data-plane API version used by the chat app and probes.
+  mlApiVersion: 2025-06-01 # ARM API version used by deployment cleanup for Foundry/ML workspaces.
 
   vmSize: Standard_L2as_v4 # Azure VM SKU; must be available in swedencentral.
   vmImageSku: win11-24h2-ent-cpc-m365 # Marketplace image SKU used with the shared publisher, offer, and version.
   vmOsDiskStorageAccountType: Standard_LRS # Managed OS disk SKU; allowed values: Standard_LRS, StandardSSD_LRS, Premium_LRS.
   vmPublicIpDnsNameLabel: '' # Optional Public IP DNS label; empty disables public DNS, otherwise use 1-63 lowercase letters, numbers, or hyphens (for example az-swe-aifp).
+  rdpAllowedPublicIpAddress: '' # Single IPv4 address for allow-rdp-user; main.ps1 uat-connect applies it without deploying.
+  rdpAllowedIpCidrs: [] # IPv4 addresses or CIDRs allowed to RDP into the VM; bare IPs stay as IP addresses. Leave empty to use only rdpAllowedPublicIpAddress and the deploying machine's detected public IP.
   vmUseSpot: false # Uses interruptible Spot capacity for lower cost; allowed values: true, false.
+  vmAutoShutdownEnabled: true # Enables the daily VM auto-shutdown schedule; allowed values: true, false.
+  vmAutoShutdownTime: '0300' # Auto-shutdown time in 24-hour HHmm format.
 
+  tagProject: aistack # Project tag applied to resources; any non-empty Azure tag value.
+  tagWorkload: enterprise-ai-foundry # Workload tag used by cleanup guards; any non-empty Azure tag value.
+  tagManagedBy: bicep # Deployment owner/tool tag; any non-empty Azure tag value.
   tagEnvironment: uat # Value for the environment resource tag; normally matches environmentSuffix.
 
-  # ---- Role-Based Access Control Actors --------------------------------------------------
-  # Supply array of Entra ID object IDs (users or security groups) for role assignments.
-  # admin gets highest permissions across data and control plane for all services.
-  # user gets operational, use, modification, and view permissions across all services.
-  # Leave empty [] to skip role assignments.
-  admin:
-    - objectId: '<REPLACE_WITH_ENTRA_OBJECT_ID>'
-      principalType: 'Group' # Allowed values: User, Group, ServicePrincipal.
-  user: []
-
+  # Automation
+  # Other template-managed RBAC role names:
+  # - Deploying identity: Key Vault Secrets Officer on Key Vault
+  # - AI Hub managed identity: Storage Blob Data Contributor on Storage Account, Key Vault Secrets User on Key Vault, Cognitive Services OpenAI User on Azure OpenAI
+  # - VM managed identity: Key Vault Secrets User on Key Vault, Cognitive Services OpenAI User on Azure OpenAI
+  # - Automation managed identity: Virtual Machine Contributor on Jumpbox VM
   serviceConnection: '<REPLACE_WITH_SERVICE_CONNECTION_NAME>' # Azure DevOps service connection used by pipelines; ignored by local deploy.ps1.
   githubAzureClientIdSecretName: AZURE_CLIENT_ID # GitHub secret name containing the OIDC application/client ID; change to values such as AZURE_CLIENT_ID_01 for per-environment credentials.
   githubAzureTenantIdSecretName: AZURE_TENANT_ID # GitHub secret name containing the Microsoft Entra tenant ID; change to values such as AZURE_TENANT_ID_01 for per-environment credentials.

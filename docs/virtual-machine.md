@@ -32,6 +32,7 @@ The Windows 11 Enterprise Jumpbox VM operates inside the private virtual network
 | **vTPM** | `true` | Enables virtual Trusted Platform Module |
 | **Identity Type** | `SystemAssigned, UserAssigned` | Dual identity; User-Assigned used by Python Chat App |
 | **Public IP DNS Label** | `vmPublicIpDnsNameLabel` from your environment YAML | Optional public DNS label for RDP convenience; leave empty to skip DNS |
+| **RDP Allowlist** | Stable `allow-rdp-user` plus temporary `allow-rdp-deployer` | User sources come from environment YAML; `main.ps1 dev-connect` / `uat-connect` refresh access, and Automation removes only the deployer rule weekly |
 | **Spot VM Capability** | `true` (Dev) / `false` (UAT) | Uses interruptible capacity to minimize compute cost |
 | **Spot Max Price** | `-1` | Bids up to on-demand pricing |
 | **Patch Mode** | `AutomaticByOS` | Automatic Windows guest OS updates |

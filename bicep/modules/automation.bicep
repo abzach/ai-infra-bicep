@@ -38,6 +38,18 @@ param vmStartScheduleStartTime string
 @description('Time zone for the VM start schedule.')
 param vmStartScheduleTimeZone string
 
+@description('Enable the weekly temporary RDP deployer rule cleanup schedule.')
+param rdpDeployerCleanupScheduleEnabled bool
+
+@description('Temporary RDP deployer rule cleanup schedule name.')
+param rdpDeployerCleanupScheduleName string
+
+@description('First occurrence of the temporary RDP deployer rule cleanup schedule.')
+param rdpDeployerCleanupScheduleStartTime string
+
+@description('Time zone for the temporary RDP deployer rule cleanup schedule.')
+param rdpDeployerCleanupScheduleTimeZone string
+
 @description('VM resource ID used as the role assignment scope.')
 param vmResourceId string
 
@@ -46,6 +58,7 @@ param tags object = {}
 
 var runtimeEnvironmentName = 'PowerShell-${replace(runtimeVersion, '.', '-')}'
 var startVmRunbookName = 'start-vm'
+var deleteRdpDeployerRuleRunbookName = 'delete-rdp-deployer-rule'
 
 resource automationAccount 'Microsoft.Automation/automationAccounts@2024-10-23' = {
   name: automationAccountName
@@ -110,6 +123,18 @@ resource vmStartSchedule 'Microsoft.Automation/automationAccounts/schedules@2024
   }
 }
 
+resource rdpDeployerCleanupSchedule 'Microsoft.Automation/automationAccounts/schedules@2024-10-23' = if (rdpDeployerCleanupScheduleEnabled) {
+  parent: automationAccount
+  name: rdpDeployerCleanupScheduleName
+  properties: {
+    description: 'Deletes the temporary allow-rdp-deployer NSG rule once per week.'
+    frequency: 'Week'
+    interval: 1
+    startTime: rdpDeployerCleanupScheduleStartTime
+    timeZone: rdpDeployerCleanupScheduleTimeZone
+  }
+}
+
 resource vm 'Microsoft.Compute/virtualMachines@2024-03-01' existing = {
   name: last(split(vmResourceId, '/'))
 }
@@ -128,3 +153,5 @@ output accountName string = automationAccount.name
 output runbookNames string[] = [for runbook in runbooks: runbook.name]
 output scheduleName string = vmStartScheduleEnabled ? vmStartSchedule.name : ''
 output jobScheduleName string = vmStartScheduleEnabled ? guid(automationAccount.id, startVmRunbookName, vmStartScheduleName) : ''
+output rdpDeployerCleanupScheduleName string = rdpDeployerCleanupScheduleEnabled ? rdpDeployerCleanupSchedule.name : ''
+output rdpDeployerCleanupJobScheduleName string = rdpDeployerCleanupScheduleEnabled ? guid(automationAccount.id, deleteRdpDeployerRuleRunbookName, rdpDeployerCleanupScheduleName) : ''

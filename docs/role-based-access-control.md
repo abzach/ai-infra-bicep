@@ -31,7 +31,7 @@ Automation Managed Identity        Jumpbox VM          Virtual Machine Contribut
 ─────────────────────────────────────────────────────────────────────────────────────────────
 Deploying Identity (SP/User)       Key Vault           Key Vault Secrets Officer
 ─────────────────────────────────────────────────────────────────────────────────────────────
-Admin Actors (Full Access)         Key Vault           Key Vault Administrator
+Admin Actors (Full Access)         Key Vault           Key Vault Administrator, Key Vault Secrets Officer
 Admin Actors (Full Access)         Storage Account     Storage Blob Data Owner, Storage Account Contributor
 Admin Actors (Full Access)         Azure OpenAI        Cognitive Services OpenAI Contributor, Cognitive Services Contributor
 Admin Actors (Full Access)         AI Hub & Project    Azure AI Administrator
@@ -60,6 +60,7 @@ User Actors (Operational Access)   Resource Groups     Reader
 | **Automation Identity** | `Virtual Machine Contributor` | `9980e02c-c2be-4d73-94e8-173b1dc7cf3c` | Jumpbox VM | Read VM state and start the VM from the daily runbook |
 | **Deploying Identity** | `Key Vault Secrets Officer` | `b86a8fe4-44ce-4948-aee5-eccb2c155cd7` | Key Vault | Write/sync secrets (VM admin password) during ARM deployment |
 | **Admin Actors** | `Key Vault Administrator` | `00482a5a-887f-4fb3-b363-3b7fe8e74483` | Key Vault | Manage keys, secrets, and certificates for administrators |
+| **Admin Actors** | `Key Vault Secrets Officer` | `b86a8fe4-44ce-4948-aee5-eccb2c155cd7` | Key Vault | Manage secrets for administrators and first-run setup |
 | **Admin Actors** | `Storage Blob Data Owner` | `b7e6dc6d-f1e8-4753-8033-0f276bb0955b` | Backing Storage Account | Full data-plane ownership of storage containers and blobs |
 | **Admin Actors** | `Storage Account Contributor` | `17d1049b-9a84-46fb-8f53-869881c3d3ab` | Backing Storage Account | Manage the storage account control plane |
 | **Admin Actors** | `Cognitive Services OpenAI Contributor` | `a001fd3d-188f-4b5d-821b-7da978bf7442` | Azure OpenAI Account | Full operations on OpenAI account and deployments |
@@ -83,7 +84,7 @@ User Actors (Operational Access)   Resource Groups     Reader
 
 1. **No Shared Keys or API Keys:** Local authentication is disabled on OpenAI, shared keys disabled on Storage, and access policies disabled on Key Vault in favor of pure Entra ID RBAC.
 2. **Deterministic Role Assignment Names:** Role assignment resource names use deterministic GUIDs based on `guid(resourceGroup().id, scope.id, principalId, roleId)` to ensure idempotency across redeployments.
-3. **Automation Isolation:** The Automation identity role is scoped to the individual VM and grants no access to Key Vault, Storage, OpenAI, networking, or role assignments.
+3. **Automation Isolation:** The Automation identity receives Virtual Machine Contributor on the individual VM and Network Contributor on the individual NSG. It has no Key Vault, Storage, OpenAI, subscription, or role-assignment access.
 
 ## Related Documentation
 

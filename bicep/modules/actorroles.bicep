@@ -76,6 +76,17 @@ resource adminKeyVaultAdmin 'Microsoft.Authorization/roleAssignments@2022-04-01'
   }
 }]
 
+// Key Vault Secrets Officer (b86a8fe4-44ce-4948-aee5-eccb2c155cd7)
+resource adminKeyVaultSecretsOfficer 'Microsoft.Authorization/roleAssignments@2022-04-01' = [for (admin, i) in adminActors: {
+  name: guid(resourceGroup().id, admin.objectId, keyVault.id, 'b86a8fe4-44ce-4948-aee5-eccb2c155cd7')
+  scope: keyVault
+  properties: {
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'b86a8fe4-44ce-4948-aee5-eccb2c155cd7')
+    principalId: admin.objectId
+    principalType: admin.?principalType ?? 'User'
+  }
+}]
+
 // Cognitive Services OpenAI Contributor (a001fd3d-188f-4b5d-821b-7da978bf7442)
 resource adminOpenAiContributor 'Microsoft.Authorization/roleAssignments@2022-04-01' = [for (admin, i) in adminActors: {
   name: guid(resourceGroup().id, openAiAccount.id, admin.objectId, 'a001fd3d-188f-4b5d-821b-7da978bf7442')

@@ -4,7 +4,7 @@ This document details the configuration, security controls, diagnostic logging, 
 
 ## Resource Overview
 
-Azure OpenAI Service provides the large language model APIs for the terminal chat application and AI Foundry project experiments. It provisions two distinct model deployments in parallel:
+Azure OpenAI Service provides the large language model APIs for the terminal chat application and AI Foundry project experiments. It provisions the ordered `modelDeployments` array from the environment YAML serially to avoid provider conflicts.
 
 - **Resource Name:** `oai-<baseName>-<environmentSuffix>-<nameSuffix>`
 - **Resource Type:** `Microsoft.CognitiveServices/accounts@2024-10-01`
@@ -24,15 +24,15 @@ Azure OpenAI Service provides the large language model APIs for the terminal cha
 
 ## Model Deployments
 
-The environment deploys two models in parallel to enable multi-persona evaluation (concise developer persona vs. architecture persona) in the chat application:
+Each `modelDeployments` entry supplies `deploymentName`, `modelName`, `modelVersion`, `skuName`, and `capacityK`. The first two entries drive the chat application's primary and secondary personas; additional entries are also deployed.
 
 | Model Deployment Role | Deployment Alias / Name | Model Catalog Name | Model Version | Provisioning SKU | TPM Capacity (`capacityK`) |
 |---|---|---|---|---|---|
 | **Primary Model** | `gpt-4-1-mini` | `gpt-4.1-mini` | `2025-04-14` | `GlobalStandard` | `10` (Dev) / `20` (UAT) |
 | **Secondary Model** | `gpt-4-1-nano` | `gpt-4.1-nano` | `2025-04-14` | `GlobalStandard` | `8` (Dev) / `10` (UAT) |
 
-### Deployment Dependency
-The secondary model deployment includes an explicit Bicep `dependsOn: [primaryModelDeployment]` declaration to prevent concurrent deployment conflicts against the Azure Cognitive Services ARM provider.
+### Deployment Ordering
+The Bicep resource loop uses `@batchSize(1)` to prevent concurrent deployment conflicts against the Azure Cognitive Services ARM provider.
 
 ## Authentication & Consumption
 

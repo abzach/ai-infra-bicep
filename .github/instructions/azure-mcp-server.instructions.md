@@ -35,7 +35,7 @@ Use the Azure MCP server for the following recurring tasks in this codebase. In 
 
 ### 2. Capacity, SKU, quota, and region validation
 
-Before changing `vmSize`, `skuName`, `modelSkuName`, `capacityK`, `secondaryCapacityK`, `location`, or model name/version in `variables/*.yaml`:
+Before changing `vmSize`, `skuName`, `location`, or any `modelDeployments` name/version/SKU/capacity in `variables/*.yaml`:
 
 1. Confirm the VM SKU exists, is not restricted, and supports the features the template requires (accelerated networking, Trusted Launch, Spot when `vmUseSpot: true`).
 2. Confirm the Azure OpenAI model name/version/SKU is offered in `location` for this subscription, and that the requested TPM fits remaining quota.

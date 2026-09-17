@@ -8,7 +8,7 @@ The repository provides three GitHub Actions workflows:
 
 1. **Continuous Integration Tests (`.github/workflows/ci.yml`):** Automatically triggered on `push` to `main`, `pull_request` against `main`, or manual dispatch. Executes free automated static checks, Bicep build and lint, Automation runbook AST validation, IaC security policy scans, AI safety and prompt injection scans on markdown/instruction files, and Python application syntax checks without requiring cloud credentials.
 2. **Deploy Workflow (`.github/workflows/deploy.yml`):** Runs What-If planning, deploys Bicep infrastructure, configures Key Vault secrets, bootstraps the Jumpbox VM, and executes post-deployment validation tests.
-3. **Cleanup Workflow (`.github/workflows/cleanup.yml`):** Runs What-If resource group deletion preview and performs guarded environment cleanup.
+3. **Cleanup Workflow (`.github/workflows/cleanup.yml`):** Previews resource-level deletion and performs guarded cleanup while preserving Key Vault and the VM OS disk.
 
 ## Workflow Overview
 
@@ -148,7 +148,7 @@ jobs:
         run: ./scripts/cleanup.ps1 -EnvironmentSuffix ${{ inputs.environment }} -WhatIf
 
   destroy:
-    name: Delete resource groups
+    name: Delete environment resources
     needs: preview
     runs-on: ubuntu-latest
     steps:

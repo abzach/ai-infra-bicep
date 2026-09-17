@@ -4,7 +4,8 @@ Every top-level `*.ps1` file in this folder is validated, provisioned as a Power
 
 | Runbook | Purpose | Schedule |
 |---|---|---|
-| `start-vm.ps1` | Starts the environment jumpbox idempotently by using the Automation user-assigned managed identity | Daily at 11:00 Asia/Kolkata |
+| `delete-rdp-deployer-rule.ps1` | Idempotently deletes only the temporary `allow-rdp-deployer` NSG rule | Weekly at `rdpDeployerCleanupScheduleTime` |
+| `start-vm.ps1` | Starts the environment jumpbox idempotently by using the Automation user-assigned managed identity | Daily at `vmStartScheduleTime` |
 
 Runbook file stems must start with a letter and contain only letters, numbers, hyphens, and underscores. Filenames must be unique without regard to case. Keep reusable files outside the top level because every top-level PowerShell file is published.
 

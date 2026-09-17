@@ -67,7 +67,7 @@ Configure the following secrets in GitHub repository or environment settings:
 The cleanup workflow (`.github/workflows/cleanup.yml` and `pipelines/cleanup.yml`) provides a guarded two-stage deletion model:
 
 1. **Stage 1: Preview (`-WhatIf`):** Evaluates environment resource groups (`rg-<baseName>-core-<env>-<suffix>` and `rg-<baseName>-network-<env>-<suffix>`) and prints exact resource deletion candidates without mutating Azure state.
-2. **Stage 2: Destroy (`-Force`):** Deletes only tag-validated resource groups containing matching `workload=enterprise-ai-foundry` and `environment=<env>` tags.
+2. **Stage 2: Destroy (`-Force`):** Deletes resources only from tag-validated environment groups while preserving the environment Key Vault and VM OS disk. The resource-group containers remain.
 
 ## Pipeline Supply Chain Security
 

@@ -2,7 +2,7 @@
 
 ## Purpose
 
-The Automation Account publishes every top-level PowerShell script from `automation/` as a PowerShell 7.4 cloud runbook. The initial `start-vm` runbook starts the environment jumpbox daily at the `vmStartScheduleTime` and `vmStartScheduleTimeZone` configured in your local `variables/core.yaml`.
+The Automation Account publishes every top-level PowerShell script from `automation/` as a PowerShell 7.4 cloud runbook. `start-vm` starts the jumpbox daily. `delete-rdp-deployer-rule` runs weekly and removes only the temporary `allow-rdp-deployer` NSG rule.
 
 ## Deployment flag
 
@@ -12,7 +12,7 @@ This component is controlled by `deployAutomation` in your environment YAML. Whe
 
 The Automation Account uses the dedicated user-assigned identity `mi-<base>-automation-<env>-<suffix>`. The runbook selects that identity explicitly with `Connect-AzAccount -Identity -AccountId <client-id>`.
 
-The identity receives Virtual Machine Contributor at the individual jumpbox VM scope. It receives no Key Vault, Storage, OpenAI, network, subscription, or role-assignment permissions.
+The identity receives Virtual Machine Contributor at the individual jumpbox VM scope and Network Contributor at the individual jumpbox NSG scope. It receives no Key Vault, Storage, OpenAI, subscription, or role-assignment permissions.
 
 ## Deployment lifecycle
 

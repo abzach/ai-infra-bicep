@@ -2,8 +2,8 @@
 
 Standalone Bicep for the subscription-scope Azure AI Foundry deployment.
 
-- `templates/main.bicep` creates environment resource groups and orchestrates modules.
-- `modules/` contains network, identity, security, observability, AI, Storage, Key Vault, VM, and Azure Automation resources, including the optional public IP DNS label for the jumpbox.
+- `templates/main.bicep` creates environment resource groups and orchestrates modules, including explicit dependencies so actor RBAC assignments wait for optional target resources before applying roles.
+- `modules/` contains network, identity, security, observability, AI, Storage, Key Vault, VM, and Azure Automation resources, including named RDP rules, arbitrary model deployment arrays, and weekly temporary-access cleanup.
 - `templates/main.bicepparam` is a documented example parameter file; `deploy.ps1` generates the effective secure parameter JSON at runtime.
 - In-depth resource configurations and tabular specifications are documented in the [Architecture Documentation](../docs/README.md).
 
