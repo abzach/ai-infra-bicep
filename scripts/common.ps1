@@ -319,6 +319,11 @@ function Get-AzureResourcesByFilter {
 }
 
 function Update-BicepCli {
+    param(
+        [string] $ScriptRoot,
+        [int] $CacheTtlHours = 24
+    )
+
     $env:AZURE_BICEP_USE_BINARY_FROM_PATH = 'false'
 
     Write-Task 'Checking Azure Bicep CLI version...'
@@ -340,6 +345,24 @@ function Update-BicepCli {
         throw "Could not parse the installed Bicep CLI version from: $installedOutput"
     }
     $installedVersion = [version]$installedMatch.Groups[1].Value
+
+    # The 'latest version available' check is a machine-wide, not subscription-scoped, network
+    # call. Cache it under the special 'machine' key so it is skipped within the TTL regardless
+    # of which subscription/environment is being deployed.
+    $cacheable = -not [string]::IsNullOrWhiteSpace($ScriptRoot)
+    if ($cacheable) {
+        $cached = Get-EnterpriseSubscriptionCacheEntry -ScriptRoot $ScriptRoot -SubscriptionId 'machine'
+        if ($cached -and $cached.Contains('bicepCliCheckedAt') -and $cached.Contains('bicepCliLatestVersion')) {
+            $checkedAt = ConvertTo-EnterpriseDateTimeOffset -Value $cached.bicepCliCheckedAt
+            if ($checkedAt -and ([DateTimeOffset]::UtcNow - $checkedAt).TotalHours -lt $CacheTtlHours) {
+                $cachedLatest = [version]$cached.bicepCliLatestVersion
+                if ($installedVersion -ge $cachedLatest) {
+                    Write-Exists "  Bicep CLI $installedVersion is current (cached latest-version check, next recheck after $($checkedAt.AddHours($CacheTtlHours).ToString('u')))."
+                    return
+                }
+            }
+        }
+    }
 
     $latestRaw = az bicep list-versions --query '[0]' --output tsv --only-show-errors 2>$null
     if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($latestRaw)) {
@@ -363,6 +386,120 @@ function Update-BicepCli {
     } else {
         Write-Exists "  Bicep CLI $installedVersion is current."
     }
+
+    if ($cacheable) {
+        Set-EnterpriseSubscriptionCacheEntry -ScriptRoot $ScriptRoot -SubscriptionId 'machine' -Updates @{
+            bicepCliCheckedAt = [DateTimeOffset]::UtcNow.ToString('o')
+            bicepCliLatestVersion = $latestVersion.ToString()
+        }
+    }
+}
+
+# ---------------------------------------------------------------------------
+# Local, git-ignored subscription state cache (.local/cache/subscription-state.json)
+#   Records slow, rarely-changing preflight results (resource provider registration,
+#   Bicep CLI upgrade checks) per Azure subscription so reruns against the same
+#   subscription can skip them instead of repeating the same network round trips.
+#   Never stores secrets, credentials, or tokens — only registration-state booleans,
+#   version strings, and timestamps.
+# ---------------------------------------------------------------------------
+function Get-EnterpriseCacheFilePath {
+    param([Parameter(Mandatory)] [string] $ScriptRoot)
+
+    $repoRoot = Split-Path -Parent $ScriptRoot
+    return Join-Path $repoRoot '.local\cache\subscription-state.json'
+}
+
+# ConvertFrom-Json auto-converts ISO-8601-looking strings into [datetime] objects, so a cached
+# timestamp can come back as either a string or a DateTime depending on the PowerShell version.
+function ConvertTo-EnterpriseDateTimeOffset {
+    param([AllowNull()] [object] $Value)
+
+    if ($null -eq $Value) {
+        return $null
+    }
+    if ($Value -is [DateTimeOffset]) {
+        return $Value
+    }
+    if ($Value -is [datetime]) {
+        return [DateTimeOffset]::new($Value.ToUniversalTime(), [TimeSpan]::Zero)
+    }
+    try {
+        return [DateTimeOffset]::Parse([string]$Value, [System.Globalization.CultureInfo]::InvariantCulture, [System.Globalization.DateTimeStyles]::RoundtripKind)
+    } catch {
+        return $null
+    }
+}
+
+function Get-EnterpriseStateCache {
+    param([Parameter(Mandatory)] [string] $ScriptRoot)
+
+    $cacheFilePath = Get-EnterpriseCacheFilePath -ScriptRoot $ScriptRoot
+    if (-not (Test-Path -LiteralPath $cacheFilePath -PathType Leaf)) {
+        return [ordered]@{ subscriptions = [ordered]@{} }
+    }
+
+    try {
+        $raw = Get-Content -LiteralPath $cacheFilePath -Raw -ErrorAction Stop
+        if ([string]::IsNullOrWhiteSpace($raw)) {
+            return [ordered]@{ subscriptions = [ordered]@{} }
+        }
+        $parsed = $raw | ConvertFrom-Json -AsHashtable -ErrorAction Stop
+        if (-not $parsed.Contains('subscriptions')) {
+            $parsed['subscriptions'] = [ordered]@{}
+        }
+        return $parsed
+    } catch {
+        # A corrupt or unreadable cache is never fatal: every caller falls back to a live check.
+        return [ordered]@{ subscriptions = [ordered]@{} }
+    }
+}
+
+function Set-EnterpriseStateCache {
+    param(
+        [Parameter(Mandatory)] [string] $ScriptRoot,
+        [Parameter(Mandatory)] [object] $State
+    )
+
+    try {
+        $cacheFilePath = Get-EnterpriseCacheFilePath -ScriptRoot $ScriptRoot
+        $cacheDir = Split-Path -Parent $cacheFilePath
+        if (-not (Test-Path -LiteralPath $cacheDir)) {
+            New-Item -ItemType Directory -Path $cacheDir -Force | Out-Null
+        }
+        $State | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $cacheFilePath -Encoding utf8NoBOM
+    } catch {
+        # Caching is best-effort only; a write failure must never fail the deployment.
+    }
+}
+
+function Get-EnterpriseSubscriptionCacheEntry {
+    param(
+        [Parameter(Mandatory)] [string] $ScriptRoot,
+        [Parameter(Mandatory)] [string] $SubscriptionId
+    )
+
+    $state = Get-EnterpriseStateCache -ScriptRoot $ScriptRoot
+    if ($state.subscriptions.Contains($SubscriptionId)) {
+        return $state.subscriptions[$SubscriptionId]
+    }
+    return $null
+}
+
+function Set-EnterpriseSubscriptionCacheEntry {
+    param(
+        [Parameter(Mandatory)] [string] $ScriptRoot,
+        [Parameter(Mandatory)] [string] $SubscriptionId,
+        [Parameter(Mandatory)] [hashtable] $Updates
+    )
+
+    $state = Get-EnterpriseStateCache -ScriptRoot $ScriptRoot
+    $entry = if ($state.subscriptions.Contains($SubscriptionId)) { $state.subscriptions[$SubscriptionId] } else { [ordered]@{} }
+    foreach ($key in $Updates.Keys) {
+        $entry[$key] = $Updates[$key]
+    }
+    $state.subscriptions[$SubscriptionId] = $entry
+    Set-EnterpriseStateCache -ScriptRoot $ScriptRoot -State $state
 }
 
 # ---------------------------------------------------------------------------
@@ -380,6 +517,8 @@ function Update-BicepCli {
 function Register-RequiredResourceProviders {
     param(
         [Parameter(Mandatory)] [string] $SubscriptionId,
+        [string] $ScriptRoot,
+        [int] $CacheTtlHours = 168,
         [string[]] $ProviderNamespaces = @(
             'Microsoft.Resources',
             'Microsoft.Authorization',
@@ -398,6 +537,23 @@ function Register-RequiredResourceProviders {
     )
 
     Write-Task 'Checking required Azure resource provider registrations...'
+
+    $sortedNamespaces = @($ProviderNamespaces | Sort-Object)
+    $namespacesHash = [System.BitConverter]::ToString(
+        [System.Security.Cryptography.SHA256]::HashData([System.Text.Encoding]::UTF8.GetBytes(($sortedNamespaces -join ',')))
+    ) -replace '-', ''
+
+    $cacheable = -not [string]::IsNullOrWhiteSpace($ScriptRoot)
+    if ($cacheable) {
+        $cached = Get-EnterpriseSubscriptionCacheEntry -ScriptRoot $ScriptRoot -SubscriptionId $SubscriptionId
+        if ($cached -and $cached.Contains('providersRegisteredAt') -and $cached.Contains('providersNamespacesHash') -and [string]$cached.providersNamespacesHash -eq $namespacesHash) {
+            $checkedAt = ConvertTo-EnterpriseDateTimeOffset -Value $cached.providersRegisteredAt
+            if ($checkedAt -and ([DateTimeOffset]::UtcNow - $checkedAt).TotalHours -lt $CacheTtlHours) {
+                Write-Exists "  All required providers were confirmed registered on this subscription as of $($checkedAt.ToString('u')) (cached, next recheck after $($checkedAt.AddHours($CacheTtlHours).ToString('u')))."
+                return
+            }
+        }
+    }
 
     $providersPendingRegistration = [System.Collections.Generic.List[string]]::new()
 
@@ -432,6 +588,13 @@ function Register-RequiredResourceProviders {
             Write-Exists "  $namespace registration completed."
         } else {
             Write-Info "  Warning: $namespace registration did not complete within the timeout (non-fatal, deployment may fail)."
+        }
+    }
+
+    if ($cacheable) {
+        Set-EnterpriseSubscriptionCacheEntry -ScriptRoot $ScriptRoot -SubscriptionId $SubscriptionId -Updates @{
+            providersRegisteredAt = [DateTimeOffset]::UtcNow.ToString('o')
+            providersNamespacesHash = $namespacesHash
         }
     }
 }

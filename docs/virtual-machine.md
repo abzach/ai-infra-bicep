@@ -12,7 +12,7 @@ The VM admin password is never rotated on a rerun. A new password is issued only
 
 The Windows 11 Enterprise Jumpbox VM operates inside the private virtual network (`10.0.2.0/24`) and hosts the dual-persona Python AI chat application. It provides developers and administrators with secure desktop and terminal access to private PaaS resources without opening those services to the public internet.
 
-- **Resource Name:** `vm-<baseName>-<environmentSuffix>-<nameSuffix>`
+- **Resource Name:** `vm-<baseName>-<environmentSuffix>`
 - **Resource Type:** `Microsoft.Compute/virtualMachines@2024-03-01`
 - **Size:** `vmSize` from your environment YAML
 - **Public DNS Name:** Optional `vmPublicIpDnsNameLabel` on the VM public IP; for example `az-swe-aifp` in `swedencentral` creates `az-swe-aifp.swedencentral.cloudapp.azure.com`
@@ -30,12 +30,22 @@ The Windows 11 Enterprise Jumpbox VM operates inside the private virtual network
 | **Security Type** | `TrustedLaunch` | Enables Trusted Launch security profile |
 | **Secure Boot** | `true` | Protects bootloaders against rootkits |
 | **vTPM** | `true` | Enables virtual Trusted Platform Module |
-| **Identity Type** | `SystemAssigned, UserAssigned` | Dual identity; User-Assigned used by Python Chat App |
+| **Identity Type** | `UserAssigned` | Single shared identity (no SystemAssigned) used by the Python Chat App and Automation |
 | **Public IP DNS Label** | `vmPublicIpDnsNameLabel` from your environment YAML | Optional public DNS label for RDP convenience; leave empty to skip DNS |
 | **RDP Allowlist** | Stable `allow-rdp-user` plus temporary `allow-rdp-deployer` | User sources come from environment YAML; `main.ps1 dev-connect` / `uat-connect` refresh access, and Automation removes only the deployer rule weekly |
 | **Spot VM Capability** | `true` (Dev) / `false` (UAT) | Uses interruptible capacity to minimize compute cost |
 | **Spot Max Price** | `-1` | Bids up to on-demand pricing |
 | **Patch Mode** | `AutomaticByOS` | Automatic Windows guest OS updates |
+
+## Attach-mode OS disk (migration support)
+
+`bicep/modules/vm.bicep` accepts an optional `existingOsDiskId` (and `osType`, default `Windows`) parameter. When set, the VM is created with `storageProfile.osDisk.createOption: 'Attach'` against that existing managed disk instead of `FromImage`, and the `osProfile` block (computer name, admin username/password, patch settings) is omitted entirely — ARM rejects `osProfile` together with `createOption: Attach`.
+
+This exists specifically to let a previously-deployed VM's OS disk survive a resource-group rename: detach the disk from the old VM (`az vm update --set storageProfile.osDisk.deleteOption=Detach` then `az vm delete`), move the orphaned disk into the new resource group (`az resource move`), then redeploy with `vmExistingOsDiskId` set to the disk's resource ID.
+
+**Important:** because Attach mode skips `osProfile`, the VM's real admin credential remains whatever was already set on the disk — it is **not** the password `deploy.ps1` generates and stores in Key Vault. Once migrated this way, `vmExistingOsDiskId` should stay set permanently; do not clear it on a later deploy, or the VM would need to be recreated `FromImage` again (losing the disk's state).
+
+Attach mode also omits the `AzureDiskEncryption` extension. The migrated disk retains its existing encryption state; applying a new BitLocker workflow through a different Key Vault can fail against an attached OS disk. Image-based VM deployments continue to configure Azure Disk Encryption.
 
 ## Virtual Machine Extensions
 
@@ -45,7 +55,7 @@ The VM template applies three managed extensions to ensure host security and com
 |---|---|---|---|
 | **AzureMonitorWindowsAgent** | `Microsoft.Azure.Monitor` / `AzureMonitorWindowsAgent` | `1.0` | Ingests OS telemetry and heartbeats to Log Analytics |
 | **IaaSAntimalware** | `Microsoft.Azure.Security` / `IaaSAntimalware` | `1.5` | Real-time antivirus protection and scheduled scans |
-| **AzureDiskEncryption** | `Microsoft.Azure.Security` / `AzureDiskEncryption` | `2.2` | BitLocker-based disk encryption backed by Key Vault |
+| **AzureDiskEncryption** | `Microsoft.Azure.Security` / `AzureDiskEncryption` | `2.2` | BitLocker-based disk encryption backed by Key Vault for image-based VM deployments |
 
 ## Scheduled Auto-Shutdown
 

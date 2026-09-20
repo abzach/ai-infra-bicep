@@ -7,12 +7,12 @@ This document details the private networking topology defined in `bicep/modules/
 The network module provisions a secured Virtual Network (VNet) with isolated subnets, network security rules, network interfaces, public IP, and integrated Private DNS Zones.
 
 ### Key Components:
-- **Virtual Network:** `vnet-<baseName>-<environmentSuffix>-<nameSuffix>`
+- **Virtual Network:** `vnet-<baseName>-<environmentSuffix>`
 - **Subnets:**
   - `services` (`10.0.1.0/24`): Hosts Private Endpoints for Key Vault, Storage Blob, Azure OpenAI, and AI Hub.
   - `vm` (`10.0.2.0/24`): Hosts the Jumpbox VM Network Interface.
-- **Network Security Group (NSG):** `vm-<baseName>-<environmentSuffix>-<nameSuffix>-nsg`
-- **Public IP:** `vm-<baseName>-<environmentSuffix>-<nameSuffix>-pip` (Standard SKU, Static allocation, optional DNS label)
+- **Network Security Group (NSG):** `vm-<baseName>-<environmentSuffix>-nsg`
+- **Public IP:** `vm-<baseName>-<environmentSuffix>-pip` (Standard SKU, Static allocation, optional DNS label)
 - **Private DNS Zones:** Linked to the VNet with automatic internal name resolution.
 
 ## Important Configurations

@@ -6,6 +6,7 @@
 variables:
   # Resource prefix
   environmentSuffix: dev # Environment token used in names and tags; allowed value in this file: dev.
+  subscriptionId: '<REPLACE_WITH_AZURE_SUBSCRIPTION_ID>' # Azure subscription GUID that owns this environment; scripts set the Azure CLI context to this subscription before deriving names.
   baseName: <REPLACE_WITH_SHORT_PREFIX> # Short lowercase naming prefix; 1-10 alphanumeric characters, kept short for the 24-character storage-name limit.
 
   # Deployment flags
@@ -16,6 +17,7 @@ variables:
   deployAiFoundry: true # AI Hub, AI Project, and hub private endpoint; allowed values: true, false.
   deployVm: true # Jumpbox VM with NIC, public IP, NSG, OS disk, and auto-shutdown schedule; allowed values: true, false. Setting false also deletes the OS disk.
   deployAutomation: true # Automation Account, its identity, and repository runbooks; allowed values: true, false. Must be false when deployVm is false.
+  deployPostgres: true # PostgreSQL Flexible Server, its delegated subnet, and its private DNS zone; allowed values: true, false.
 
   # Admins
   # Supply array of Entra ID object IDs (users or security groups) for role assignments.
@@ -47,6 +49,7 @@ variables:
   location: eastus # Azure region for this environment; use a supported region name.
   skuName: Standard_LRS # Storage redundancy SKU; allowed values: Standard_LRS, Standard_GRS, Standard_ZRS.
   storageAccessTier: Hot # Blob access tier; allowed values: Hot, Cool.
+  postgresSkuName: Standard_B1ms # PostgreSQL Flexible Server compute SKU; Standard_B1ms (Burstable) keeps the server within the Azure free-tier compute allowance.
   modelDeployments: # Ordered model deployments; the first two are the chat app primary and secondary, and more entries may be added.
     - deploymentName: gpt-4-1-mini # Unique deployment alias used by clients.
       modelName: gpt-4.1-mini # Exact model catalog name available in location.

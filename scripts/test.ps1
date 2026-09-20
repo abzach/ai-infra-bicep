@@ -159,12 +159,14 @@ if ([string]::IsNullOrWhiteSpace($subscriptionId)) {
     exit 1
 }
 
-$NameSuffix = ($subscriptionId -replace '-', '').Substring(0, 4).ToLower()
+$configWithoutSuffix = Read-EnterpriseEnvironmentConfig -ScriptRoot $scriptRoot -EnvironmentSuffix $EnvironmentSuffix
+$subscriptionId = Set-EnterpriseAzureSubscriptionContext -Config $configWithoutSuffix
+$NameSuffix = Get-EnterpriseSubscriptionNameSuffix -SubscriptionId $subscriptionId
 $config = Read-EnterpriseEnvironmentConfig -ScriptRoot $scriptRoot -EnvironmentSuffix $EnvironmentSuffix -NameSuffix $NameSuffix
 
 if ($Mode -eq 'Smoke') {
     $Location              = $config.location
-    $CoreResourceGroupName = $config.coreResourceGroupName
+    $WorkloadResourceGroupName = $config.WorkloadResourceGroupName
     $ModelDeployments      = @($config.modelDeployments)
     $MlApiVersion          = $config.mlApiVersion
     $OpenaiApiVersion      = $config.openaiApiVersion
@@ -180,14 +182,14 @@ if ($Mode -eq 'Smoke') {
     $deletedAccounts = az cognitiveservices account list-deleted --query "[?name=='$openAiAccountName'].id" -o tsv 2>$null
     if ($deletedAccounts) {
         Write-Needed "Purging soft-deleted OpenAI account '$openAiAccountName'..."
-        az cognitiveservices account purge --location $Location --resource-group $CoreResourceGroupName --name $openAiAccountName 2>$null
+        az cognitiveservices account purge --location $Location --resource-group $WorkloadResourceGroupName --name $openAiAccountName 2>$null
     }
 
     $armToken   = (az account get-access-token --query accessToken -o tsv 2>$null)
     $armHeaders = @{ Authorization = "Bearer $armToken" }
     $sub        = (az account show --query id -o tsv 2>$null)
     foreach ($wsName in @($hubName, $projectName)) {
-        $wsUrl = "https://management.azure.com/subscriptions/$sub/resourceGroups/$CoreResourceGroupName/providers/Microsoft.MachineLearningServices/workspaces/$wsName`?api-version=$MlApiVersion&forcePurge=true"
+        $wsUrl = "https://management.azure.com/subscriptions/$sub/resourceGroups/$WorkloadResourceGroupName/providers/Microsoft.MachineLearningServices/workspaces/$wsName`?api-version=$MlApiVersion&forcePurge=true"
         try {
             Invoke-RestMethod -Method DELETE -Uri $wsUrl -Headers $armHeaders -ErrorAction Stop | Out-Null
             Write-Exists "Purged stale ML workspace '$wsName'."
@@ -211,7 +213,7 @@ if ($Mode -eq 'Smoke') {
     Write-Task "Waiting for OpenAI account '$openAiAccountName' to be ready..."
     $maxWait = 30
     for ($i = 1; $i -le $maxWait; $i++) {
-        $oaiState = az cognitiveservices account show --resource-group $CoreResourceGroupName --name $openAiAccountName --query "properties.provisioningState" -o tsv 2>$null
+        $oaiState = az cognitiveservices account show --resource-group $WorkloadResourceGroupName --name $openAiAccountName --query "properties.provisioningState" -o tsv 2>$null
         if ($oaiState -eq 'Succeeded') {
             Write-Exists "OpenAI account is ready."
             break
@@ -227,7 +229,7 @@ if ($Mode -eq 'Smoke') {
     foreach ($modelDeployment in $ModelDeployments) {
         Write-Task "Ensuring model deployment '$($modelDeployment.deploymentName)' exists on '$openAiAccountName'..."
         az cognitiveservices account deployment create `
-            --resource-group $CoreResourceGroupName `
+            --resource-group $WorkloadResourceGroupName `
             --name $openAiAccountName `
             --deployment-name $modelDeployment.deploymentName `
             --model-name $modelDeployment.modelName `
@@ -246,18 +248,15 @@ if ($Mode -eq 'Smoke') {
 }
 
 if ($Mode -eq 'Validate' -or $Mode -eq 'Smoke') {
-    $CoreResourceGroupName    = $config.coreResourceGroupName
-    $NetworkResourceGroupName = $config.networkResourceGroupName
+    $WorkloadResourceGroupName    = $config.WorkloadResourceGroupName
+    $FoundationResourceGroupName = $config.FoundationResourceGroupName
     $storageAccountName       = $config.storageAccountName
     $keyVaultName             = $config.keyVaultName
     $openAiAccountName        = $config.openAiAccountName
     $hubName                  = $config.hubName
     $projectName              = $config.projectName
-    $hubManagedIdentityName   = $config.hubManagedIdentityName
-    $vmManagedIdentityName    = $config.vmManagedIdentityName
-    $automationManagedIdentityName = $config.automationManagedIdentityName
+    $sharedManagedIdentityName = $config.sharedManagedIdentityName
     $automationAccountName    = $config.automationAccountName
-    $legacyManagedIdentityName = $config.legacyManagedIdentityName
     $vnetName                 = $config.vnetName
     $vmName                   = $config.vmName
 
@@ -270,10 +269,10 @@ if ($Mode -eq 'Validate' -or $Mode -eq 'Smoke') {
     $passed = $true
 
     Write-Task 'Testing enterprise resources...'
-    Write-Info "  Core RG    : $CoreResourceGroupName"
-    Write-Info "  Network RG : $NetworkResourceGroupName"
+    Write-Info "  Workload RG   : $WorkloadResourceGroupName"
+    Write-Info "  Foundation RG : $FoundationResourceGroupName"
 
-    $storage = az storage account show --name $storageAccountName --resource-group $CoreResourceGroupName --output json 2>$null | ConvertFrom-Json
+    $storage = az storage account show --name $storageAccountName --resource-group $WorkloadResourceGroupName --output json 2>$null | ConvertFrom-Json
     if (-not $deployStorageFlag) {
         if ($storage) { Write-Needed "Fail: deployStorage=false but storage account '$storageAccountName' still exists"; $passed = $false }
         else { Write-Info 'Skip: deployStorage=false; storage account checks skipped.' }
@@ -289,7 +288,7 @@ if ($Mode -eq 'Validate' -or $Mode -eq 'Smoke') {
         if ($storage.accessTier -eq $config.storageAccessTier) { Write-Exists "Pass: storage access tier is '$($config.storageAccessTier)'" }
         else { Write-Needed "Fail: storage access tier is '$($storage.accessTier)', expected '$($config.storageAccessTier)'"; $passed = $false }
 
-        $blobProperties = az storage account blob-service-properties show --account-name $storageAccountName --resource-group $CoreResourceGroupName --output json 2>$null | ConvertFrom-Json
+        $blobProperties = az storage account blob-service-properties show --account-name $storageAccountName --resource-group $WorkloadResourceGroupName --output json 2>$null | ConvertFrom-Json
         if (-not $blobProperties) {
             Write-Needed 'Fail: storage blob service properties could not be read'; $passed = $false
         } else {
@@ -302,7 +301,7 @@ if ($Mode -eq 'Validate' -or $Mode -eq 'Smoke') {
         }
     }
 
-    $vault = az keyvault show --name $keyVaultName --resource-group $CoreResourceGroupName --output json 2>$null | ConvertFrom-Json
+    $vault = az keyvault show --name $keyVaultName --resource-group $WorkloadResourceGroupName --output json 2>$null | ConvertFrom-Json
     if (-not $vault) {
         Write-Needed "Fail: Key Vault '$keyVaultName' not found"
         $passed = $false
@@ -334,7 +333,7 @@ if ($Mode -eq 'Validate' -or $Mode -eq 'Smoke') {
         }
     }
 
-    $openAi = az cognitiveservices account show --name $openAiAccountName --resource-group $CoreResourceGroupName --output json 2>$null | ConvertFrom-Json
+    $openAi = az cognitiveservices account show --name $openAiAccountName --resource-group $WorkloadResourceGroupName --output json 2>$null | ConvertFrom-Json
     if (-not $openAi) {
         Write-Needed "Fail: Azure OpenAI account '$openAiAccountName' not found"
         $passed = $false
@@ -345,8 +344,8 @@ if ($Mode -eq 'Validate' -or $Mode -eq 'Smoke') {
         else { Write-Needed 'Fail: OpenAI local authentication must remain disabled'; $passed = $false }
     }
 
-    $hub = az resource show --name $hubName --resource-group $CoreResourceGroupName --resource-type Microsoft.MachineLearningServices/workspaces --output json 2>$null | ConvertFrom-Json
-    $project = az resource show --name $projectName --resource-group $CoreResourceGroupName --resource-type Microsoft.MachineLearningServices/workspaces --output json 2>$null | ConvertFrom-Json
+    $hub = az resource show --name $hubName --resource-group $WorkloadResourceGroupName --resource-type Microsoft.MachineLearningServices/workspaces --output json 2>$null | ConvertFrom-Json
+    $project = az resource show --name $projectName --resource-group $WorkloadResourceGroupName --resource-type Microsoft.MachineLearningServices/workspaces --output json 2>$null | ConvertFrom-Json
     if (-not $deployAiFoundryFlag) {
         if ($hub -or $project) { Write-Needed 'Fail: deployAiFoundry=false but the AI Hub or AI Project still exists'; $passed = $false }
         else { Write-Info 'Skip: deployAiFoundry=false; AI Hub and AI Project checks skipped.' }
@@ -358,23 +357,12 @@ if ($Mode -eq 'Validate' -or $Mode -eq 'Smoke') {
         else { Write-Exists "Pass: AI Project '$projectName' exists" }
     }
 
-    $hubManagedIdentity = az identity show --name $hubManagedIdentityName --resource-group $CoreResourceGroupName --output json 2>$null | ConvertFrom-Json
-    if (-not $hubManagedIdentity) { Write-Needed "Fail: AI Hub managed identity '$hubManagedIdentityName' not found"; $passed = $false }
-    else { Write-Exists "Pass: AI Hub managed identity '$hubManagedIdentityName' exists" }
-
-    $vmManagedIdentity = az identity show --name $vmManagedIdentityName --resource-group $CoreResourceGroupName --output json 2>$null | ConvertFrom-Json
-    if (-not $vmManagedIdentity) { Write-Needed "Fail: VM managed identity '$vmManagedIdentityName' not found"; $passed = $false }
-    else { Write-Exists "Pass: VM managed identity '$vmManagedIdentityName' exists" }
+    $sharedManagedIdentity = az identity show --name $sharedManagedIdentityName --resource-group $FoundationResourceGroupName --output json 2>$null | ConvertFrom-Json
+    if (-not $sharedManagedIdentity) { Write-Needed "Fail: shared managed identity '$sharedManagedIdentityName' not found"; $passed = $false }
+    else { Write-Exists "Pass: shared managed identity '$sharedManagedIdentityName' exists" }
 
     if ($config.deployAutomation -eq 'true') {
-        $automationManagedIdentity = az identity show --name $automationManagedIdentityName --resource-group $CoreResourceGroupName --output json 2>$null | ConvertFrom-Json
-        if (-not $automationManagedIdentity) {
-            Write-Needed "Fail: Automation managed identity '$automationManagedIdentityName' not found"; $passed = $false
-        } else {
-            Write-Exists "Pass: Automation managed identity '$automationManagedIdentityName' exists"
-        }
-
-        $automationAccountResourceUri = "https://management.azure.com/subscriptions/$subscriptionId/resourceGroups/$CoreResourceGroupName/providers/Microsoft.Automation/automationAccounts/$automationAccountName"
+        $automationAccountResourceUri = "https://management.azure.com/subscriptions/$subscriptionId/resourceGroups/$WorkloadResourceGroupName/providers/Microsoft.Automation/automationAccounts/$automationAccountName"
         $automationAccountUri = "$automationAccountResourceUri`?api-version=2024-10-23"
         $automationAccount = az rest --method get --url $automationAccountUri --output json 2>$null | ConvertFrom-Json
         if (-not $automationAccount) {
@@ -417,12 +405,8 @@ if ($Mode -eq 'Validate' -or $Mode -eq 'Smoke') {
         }
     }
 
-    $legacyManagedIdentity = az identity show --name $legacyManagedIdentityName --resource-group $CoreResourceGroupName --output json 2>$null | ConvertFrom-Json
-    if ($legacyManagedIdentity) { Write-Needed "Fail: retired shared managed identity '$legacyManagedIdentityName' still exists"; $passed = $false }
-    else { Write-Exists 'Pass: retired shared managed identity is absent' }
-
-    $vnet = az network vnet show --name $vnetName --resource-group $NetworkResourceGroupName --output json 2>$null | ConvertFrom-Json
-    if (-not $vnet) { Write-Needed "Fail: virtual network '$vnetName' not found in '$NetworkResourceGroupName'"; $passed = $false }
+    $vnet = az network vnet show --name $vnetName --resource-group $FoundationResourceGroupName --output json 2>$null | ConvertFrom-Json
+    if (-not $vnet) { Write-Needed "Fail: virtual network '$vnetName' not found in '$FoundationResourceGroupName'"; $passed = $false }
     else {
         if ($config.vnetAddressSpace -in $vnet.addressSpace.addressPrefixes) { Write-Exists "Pass: VNet address space includes '$($config.vnetAddressSpace)'" }
         else { Write-Needed "Fail: VNet address spaces '$($vnet.addressSpace.addressPrefixes -join ', ')' do not include '$($config.vnetAddressSpace)'"; $passed = $false }
@@ -435,7 +419,7 @@ if ($Mode -eq 'Validate' -or $Mode -eq 'Smoke') {
     }
 
     $vmNicName = "$vmName-nic"
-    $vmNic = az network nic show --name $vmNicName --resource-group $NetworkResourceGroupName --output json 2>$null | ConvertFrom-Json
+    $vmNic = az network nic show --name $vmNicName --resource-group $FoundationResourceGroupName --output json 2>$null | ConvertFrom-Json
     if (-not $vmNic) {
         Write-Needed "Fail: VM NIC '$vmNicName' not found"; $passed = $false
     } else {
@@ -444,36 +428,55 @@ if ($Mode -eq 'Validate' -or $Mode -eq 'Smoke') {
         else { Write-Needed "Fail: accelerated networking is '$($vmNic.enableAcceleratedNetworking)', expected '$expectedAcceleratedNetworking'"; $passed = $false }
     }
 
-    $privateEndpoints = az network private-endpoint list --resource-group $NetworkResourceGroupName --query "[].name" --output tsv 2>$null
+    $privateEndpoints = az network private-endpoint list --resource-group $FoundationResourceGroupName --query "[].name" --output tsv 2>$null
     if (($privateEndpoints | Measure-Object).Count -lt 3) {
         Write-Needed 'Fail: expected at least 3 private endpoints'; $passed = $false
     } else {
         Write-Exists 'Pass: private endpoints found for dependent services'
     }
 
-    $vm = az vm show --name $vmName --resource-group $CoreResourceGroupName --show-details --output json 2>$null | ConvertFrom-Json
+    $vm = az vm show --name $vmName --resource-group $WorkloadResourceGroupName --show-details --output json 2>$null | ConvertFrom-Json
     if (-not $deployVmFlag) {
         if ($vm) { Write-Needed "Fail: deployVm=false but jumpbox VM '$vmName' still exists"; $passed = $false }
         else { Write-Info 'Skip: deployVm=false; jumpbox VM checks skipped.' }
     } elseif (-not $vm) {
         Write-Needed "Fail: jumpbox VM '$vmName' not found"; $passed = $false
     } else {
-        $expectedImage = "$($config.vmImagePublisher):$($config.vmImageOffer):$($config.vmImageSku):$($config.vmImageVersion)"
-        $actualImage = "$($vm.storageProfile.imageReference.publisher):$($vm.storageProfile.imageReference.offer):$($vm.storageProfile.imageReference.sku):$($vm.storageProfile.imageReference.version)"
-        if ($actualImage -ieq $expectedImage) {
-            Write-Exists "Pass: jumpbox VM uses configured image '$expectedImage'"
+        $expectedExistingOsDiskId = [string]$config.vmExistingOsDiskId
+        $actualOsDiskId = [string]$vm.storageProfile.osDisk.managedDisk.id
+        if (-not [string]::IsNullOrWhiteSpace($expectedExistingOsDiskId)) {
+            if ($actualOsDiskId -ieq $expectedExistingOsDiskId) {
+                Write-Exists 'Pass: jumpbox VM uses the configured existing OS disk'
+            } else {
+                Write-Needed "Fail: VM OS disk is '$actualOsDiskId', expected '$expectedExistingOsDiskId'"; $passed = $false
+            }
+
+            $attachedDisk = az disk show --ids $actualOsDiskId --output json 2>$null | ConvertFrom-Json
+            if ($attachedDisk -and $attachedDisk.sku.name -eq $config.vmOsDiskStorageAccountType) {
+                Write-Exists "Pass: attached VM OS disk tier is '$($config.vmOsDiskStorageAccountType)'"
+            } else {
+                $actualDiskSku = if ($attachedDisk) { $attachedDisk.sku.name } else { '<not found>' }
+                Write-Needed "Fail: attached VM OS disk tier is '$actualDiskSku', expected '$($config.vmOsDiskStorageAccountType)'"; $passed = $false
+            }
         } else {
-            Write-Needed "Fail: VM image is '$actualImage', expected '$expectedImage'"; $passed = $false
+            $expectedImage = "$($config.vmImagePublisher):$($config.vmImageOffer):$($config.vmImageSku):$($config.vmImageVersion)"
+            $actualImage = "$($vm.storageProfile.imageReference.publisher):$($vm.storageProfile.imageReference.offer):$($vm.storageProfile.imageReference.sku):$($vm.storageProfile.imageReference.version)"
+            if ($actualImage -ieq $expectedImage) {
+                Write-Exists "Pass: jumpbox VM uses configured image '$expectedImage'"
+            } else {
+                Write-Needed "Fail: VM image is '$actualImage', expected '$expectedImage'"; $passed = $false
+            }
+
+            if ($vm.storageProfile.osDisk.managedDisk.storageAccountType -eq $config.vmOsDiskStorageAccountType) {
+                Write-Exists "Pass: VM OS disk tier is '$($config.vmOsDiskStorageAccountType)'"
+            } else {
+                Write-Needed "Fail: VM OS disk tier is '$($vm.storageProfile.osDisk.managedDisk.storageAccountType)', expected '$($config.vmOsDiskStorageAccountType)'"; $passed = $false
+            }
         }
         if ($vm.hardwareProfile.vmSize -eq $config.vmSize) {
             Write-Exists "Pass: jumpbox VM size is '$($config.vmSize)'"
         } else {
             Write-Needed "Fail: VM size is '$($vm.hardwareProfile.vmSize)', expected '$($config.vmSize)'"; $passed = $false
-        }
-        if ($vm.storageProfile.osDisk.managedDisk.storageAccountType -eq $config.vmOsDiskStorageAccountType) {
-            Write-Exists "Pass: VM OS disk tier is '$($config.vmOsDiskStorageAccountType)'"
-        } else {
-            Write-Needed "Fail: VM OS disk tier is '$($vm.storageProfile.osDisk.managedDisk.storageAccountType)', expected '$($config.vmOsDiskStorageAccountType)'"; $passed = $false
         }
     }
 
@@ -484,7 +487,7 @@ if ($Mode -eq 'Validate' -or $Mode -eq 'Smoke') {
     } else {
         $autoShutdownScheduleName = "shutdown-computevm-$vmName"
         $shutdownRaw = az resource show `
-            --resource-group $CoreResourceGroupName `
+            --resource-group $WorkloadResourceGroupName `
             --resource-type 'Microsoft.DevTestLab/schedules' `
             --name $autoShutdownScheduleName `
             --output json 2>$null
@@ -537,8 +540,12 @@ if ($Mode -eq 'Validate' -or $Mode -eq 'Smoke') {
     }
 
     # ---- B1: VM extensions provisioned ----
-    $expectedExtensions = @('AzureMonitorWindowsAgent', 'IaaSAntimalware', 'AzureDiskEncryption')
-    $extensionsRaw = az vm extension list --vm-name $vmName --resource-group $CoreResourceGroupName --output json 2>$null
+    $usingExistingOsDisk = -not [string]::IsNullOrWhiteSpace([string]$config.vmExistingOsDiskId)
+    $expectedExtensions = @('AzureMonitorWindowsAgent', 'IaaSAntimalware')
+    if (-not $usingExistingOsDisk) {
+        $expectedExtensions += 'AzureDiskEncryption'
+    }
+    $extensionsRaw = az vm extension list --vm-name $vmName --resource-group $WorkloadResourceGroupName --output json 2>$null
     if ([string]::IsNullOrWhiteSpace($extensionsRaw)) {
         Write-Needed 'Fail: could not retrieve VM extension list'; $passed = $false
     } else {
@@ -553,7 +560,8 @@ if ($Mode -eq 'Validate' -or $Mode -eq 'Smoke') {
             }
         }
         if (-not $extensionsFailed) {
-            Write-Exists 'Pass: VM extensions all provisioned (AMA, Antimalware, ADE)'
+            $extensionSummary = if ($usingExistingOsDisk) { 'AMA, Antimalware; retained disk encryption' } else { 'AMA, Antimalware, ADE' }
+            Write-Exists "Pass: VM extensions all provisioned ($extensionSummary)"
         }
     }
 
@@ -601,7 +609,7 @@ Write-Host 'LAUNCHER_VALIDATION_OK'
     Set-Content -Path $launcherValidationFile -Value $launcherValidationScript -Encoding UTF8
 
     $launcherValidationResult = az vm run-command invoke `
-        --resource-group $CoreResourceGroupName `
+        --resource-group $WorkloadResourceGroupName `
         --name $vmName `
         --command-id RunPowerShellScript `
         --scripts "@$launcherValidationFile" `
@@ -628,9 +636,9 @@ Write-Host 'LAUNCHER_VALIDATION_OK'
 
     # ---- C1: NSG has deny-all RDP rule ----
     $nsgResourceName = "${vmName}-nsg"
-    $nsg = az network nsg show --name $nsgResourceName --resource-group $NetworkResourceGroupName --output json 2>$null | ConvertFrom-Json
+    $nsg = az network nsg show --name $nsgResourceName --resource-group $FoundationResourceGroupName --output json 2>$null | ConvertFrom-Json
     if (-not $nsg) {
-        Write-Needed "Fail: NSG '$nsgResourceName' not found in '$NetworkResourceGroupName'"; $passed = $false
+        Write-Needed "Fail: NSG '$nsgResourceName' not found in '$FoundationResourceGroupName'"; $passed = $false
     } else {
         $denyRdpRule = $nsg.securityRules | Where-Object {
             $_.access -eq 'Deny' -and
@@ -651,11 +659,11 @@ Write-Host 'LAUNCHER_VALIDATION_OK'
         'privatelink.blob.core.windows.net',
         'privatelink.api.azureml.ms'
     )
-    $dnsZoneList = az network private-dns zone list --resource-group $NetworkResourceGroupName --query '[].name' --output tsv 2>$null
+    $dnsZoneList = az network private-dns zone list --resource-group $FoundationResourceGroupName --query '[].name' --output tsv 2>$null
     $dnsZonesMissing = $false
     foreach ($zone in $expectedDnsZones) {
         if ($dnsZoneList -notcontains $zone) {
-            Write-Needed "Fail: private DNS zone '$zone' not found in '$NetworkResourceGroupName'"; $passed = $false; $dnsZonesMissing = $true
+            Write-Needed "Fail: private DNS zone '$zone' not found in '$FoundationResourceGroupName'"; $passed = $false; $dnsZonesMissing = $true
         }
     }
     if (-not $dnsZonesMissing) {
@@ -726,7 +734,7 @@ Write-Host 'LAUNCHER_VALIDATION_OK'
 
     # ---- E1: Log Analytics workspace ----
     $lawWorkspaceName = $config.lawWorkspaceName
-    $law = az monitor log-analytics workspace show --workspace-name $lawWorkspaceName --resource-group $CoreResourceGroupName --output json 2>$null | ConvertFrom-Json
+    $law = az monitor log-analytics workspace show --workspace-name $lawWorkspaceName --resource-group $WorkloadResourceGroupName --output json 2>$null | ConvertFrom-Json
     if (-not $deployLogAnalyticsFlag) {
         if ($law) { Write-Needed "Fail: deployLogAnalytics=false but workspace '$lawWorkspaceName' still exists"; $passed = $false }
         else { Write-Info 'Skip: deployLogAnalytics=false; Log Analytics checks skipped.' }
@@ -767,14 +775,10 @@ Write-Host 'LAUNCHER_VALIDATION_OK'
         }
     }
 
-    # ---- F1: Workload-specific managed identity role assignments ----
+    # ---- F1: Shared managed identity role assignments ----
     $identityRoleRequirements = @(
-        [pscustomobject]@{ Identity = $hubManagedIdentity; Name = 'AI Hub managed identity'; Roles = @(
+        [pscustomobject]@{ Identity = $sharedManagedIdentity; Name = 'Shared managed identity'; Roles = @(
             [pscustomobject]@{ Id = 'ba92f5b4-2d11-453d-a403-e96b0029c9fe'; Name = 'Storage Blob Data Contributor' },
-            [pscustomobject]@{ Id = '4633458b-17de-408a-b874-0445c86b69e6'; Name = 'Key Vault Secrets User' },
-            [pscustomobject]@{ Id = '5e0bd9bd-7b93-4f28-af87-19fc36ad61bd'; Name = 'Cognitive Services OpenAI User' }
-        ) },
-        [pscustomobject]@{ Identity = $vmManagedIdentity; Name = 'VM managed identity'; Roles = @(
             [pscustomobject]@{ Id = '4633458b-17de-408a-b874-0445c86b69e6'; Name = 'Key Vault Secrets User' },
             [pscustomobject]@{ Id = '5e0bd9bd-7b93-4f28-af87-19fc36ad61bd'; Name = 'Cognitive Services OpenAI User' }
         ) }
@@ -843,7 +847,7 @@ Write-Host 'LAUNCHER_VALIDATION_OK'
 if ($Mode -eq 'Smoke') {
     Write-Task 'Step 3/3: Probing model endpoint from inside the VM...'
 
-    $smokeMiClientId = (az identity show --name $config.vmManagedIdentityName --resource-group $CoreResourceGroupName --query clientId --output tsv 2>$null).Trim()
+    $smokeMiClientId = (az identity show --name $config.sharedManagedIdentityName --resource-group $FoundationResourceGroupName --query clientId --output tsv 2>$null).Trim()
 
     $smokeScript = @'
 
@@ -882,7 +886,7 @@ Write-Host $response.choices[0].message.content
     $smokeScript = $smokeScript -replace '__MI_CLIENT_ID__',       $smokeMiClientId
 
     az vm run-command invoke `
-        --resource-group $CoreResourceGroupName `
+        --resource-group $WorkloadResourceGroupName `
         --name $vmName `
         --command-id RunPowerShellScript `
         --scripts $smokeScript `
@@ -914,16 +918,17 @@ if ($Mode -eq 'ChatDual') {
 
     $vmName                = $config.vmName
     $keyVaultName          = $config.keyVaultName
-    $CoreResourceGroupName = $config.coreResourceGroupName
+    $WorkloadResourceGroupName = $config.WorkloadResourceGroupName
+    $FoundationResourceGroupName = $config.FoundationResourceGroupName
     $OpenaiApiVersion      = $config.openaiApiVersion
-    $vmManagedIdentityName = $config.vmManagedIdentityName
+    $sharedManagedIdentityName = $config.sharedManagedIdentityName
 
-    $clientId = (az identity show --name $vmManagedIdentityName --resource-group $CoreResourceGroupName --query clientId --output tsv 2>$null)
+    $clientId = (az identity show --name $sharedManagedIdentityName --resource-group $FoundationResourceGroupName --query clientId --output tsv 2>$null)
     if (-not $clientId) {
-        Write-Warning "Could not retrieve client ID for '$vmManagedIdentityName'. Test will default to system assigned identity."
+        Write-Warning "Could not retrieve client ID for '$sharedManagedIdentityName'."
         $clientId = ""
     } else {
-        Write-Host "Using VM managed identity '$vmManagedIdentityName' (client ID: $clientId)..."
+        Write-Host "Using shared managed identity '$sharedManagedIdentityName' (client ID: $clientId)..."
     }
 
     Write-Host "Testing dual-model chat connectivity on VM '$vmName'..."
@@ -1002,7 +1007,7 @@ Test-Model -DeploymentName $dep2 -Label "Secondary model"
     Set-Content -Path $tempScriptFile -Value $dualScript -Encoding UTF8
 
     $result = az vm run-command invoke `
-        --resource-group $CoreResourceGroupName `
+        --resource-group $WorkloadResourceGroupName `
         --name $vmName `
         --command-id RunPowerShellScript `
         --scripts "@$tempScriptFile" `

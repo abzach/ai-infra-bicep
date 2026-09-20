@@ -25,6 +25,15 @@ param deployLogAnalytics = true
 param deployAiFoundry = true
 param deployVm = true
 param deployAutomation = true
+param deployPostgres = true
+
+param postgresSubnetAddressPrefix = '10.0.3.0/24'
+param postgresSkuName = 'Standard_B1ms'
+param postgresVersion = '16'
+param postgresStorageSizeGB = 32
+param postgresBackupRetentionDays = 7
+param postgresAdminUsername = 'pgadmin'
+param postgresAdminPassword = readEnvironmentVariable('POSTGRES_ADMIN_PASSWORD', '')
 
 param storageAccessTier = 'Hot'
 param containerName = 'chatapp'
@@ -98,6 +107,7 @@ param rdpDeployerCleanupScheduleEnabled = true
 param rdpDeployerCleanupScheduleStartTime = '2026-12-01T00:00:00+00:00'
 param rdpDeployerCleanupScheduleTimeZone = 'Etc/UTC'
 param nameSuffix = '0000'
+param resourceGroupInstance = '001'
 
 param logAnalyticsRetentionDays = 30
 

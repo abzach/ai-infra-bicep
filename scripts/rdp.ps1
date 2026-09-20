@@ -140,7 +140,9 @@ if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($subscriptionId)) {
     exit 1
 }
 
-$nameSuffix = ($subscriptionId.Trim() -replace '-', '').Substring(0, 4).ToLower()
+$configWithoutSuffix = Read-EnterpriseEnvironmentConfig -ScriptRoot $scriptRoot -EnvironmentSuffix $EnvironmentSuffix
+$subscriptionId = Set-EnterpriseAzureSubscriptionContext -Config $configWithoutSuffix
+$nameSuffix = Get-EnterpriseSubscriptionNameSuffix -SubscriptionId $subscriptionId
 $config = Read-EnterpriseEnvironmentConfig -ScriptRoot $scriptRoot -EnvironmentSuffix $EnvironmentSuffix -NameSuffix $nameSuffix
 
 if (-not (Convert-ToBoolean -Value $config.deployVm -Default $true)) {
@@ -176,17 +178,17 @@ if ($userCidrs.Count -eq 0 -and $deployerCidrs.Count -eq 0) {
     exit 1
 }
 
-$networkResourceGroupName = $config.networkResourceGroupName
+$FoundationResourceGroupName = $config.FoundationResourceGroupName
 $nsgName = "$($config.vmName)-nsg"
 
-Write-Task "Checking NSG '$nsgName' in '$networkResourceGroupName'..."
+Write-Task "Checking NSG '$nsgName' in '$FoundationResourceGroupName'..."
 $nsgId = az network nsg show `
-    --resource-group $networkResourceGroupName `
+    --resource-group $FoundationResourceGroupName `
     --name $nsgName `
     --query id `
     --output tsv 2>$null
 if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($nsgId)) {
-    Write-Error "NSG '$nsgName' was not found in resource group '$networkResourceGroupName'. Deploy the VM networking first."
+    Write-Error "NSG '$nsgName' was not found in resource group '$FoundationResourceGroupName'. Deploy the VM networking first."
     exit 1
 }
 Write-Exists '  NSG found.'
@@ -194,7 +196,7 @@ Write-Exists '  NSG found.'
 Write-Task 'Ensuring deny-all RDP rule remains present...'
 $denyRuleName = 'deny-rdp-all'
 $denyRuleExists = az network nsg rule show `
-    --resource-group $networkResourceGroupName `
+    --resource-group $FoundationResourceGroupName `
     --nsg-name $nsgName `
     --name $denyRuleName `
     --query name `
@@ -205,7 +207,7 @@ if ($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace($denyRuleExists))
     Write-Info '  Would create deny-rdp-all at priority 4096.'
 } else {
     az network nsg rule create `
-        --resource-group $networkResourceGroupName `
+        --resource-group $FoundationResourceGroupName `
         --nsg-name $nsgName `
         --name $denyRuleName `
         --priority 4096 `
@@ -226,7 +228,7 @@ if ($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace($denyRuleExists))
 }
 
 $legacyRuleNames = @(az network nsg rule list `
-    --resource-group $networkResourceGroupName `
+    --resource-group $FoundationResourceGroupName `
     --nsg-name $nsgName `
     --query "[?starts_with(name, 'allow-rdp-from-')].name" `
     --output tsv 2>$null)
@@ -236,7 +238,7 @@ foreach ($legacyRuleName in $legacyRuleNames) {
         Write-Info "  Would remove legacy rule '$legacyRuleName'."
         continue
     }
-    az network nsg rule delete --resource-group $networkResourceGroupName --nsg-name $nsgName --name $legacyRuleName --output none
+    az network nsg rule delete --resource-group $FoundationResourceGroupName --nsg-name $nsgName --name $legacyRuleName --output none
     if ($LASTEXITCODE -ne 0) {
         Write-Error "Failed to remove legacy NSG rule '$legacyRuleName'."
         exit 1
@@ -256,11 +258,11 @@ foreach ($rule in $rules) {
         continue
     }
 
-    $existingRule = az network nsg rule show --resource-group $networkResourceGroupName --nsg-name $nsgName --name $rule.Name --query name --output tsv 2>$null
+    $existingRule = az network nsg rule show --resource-group $FoundationResourceGroupName --nsg-name $nsgName --name $rule.Name --query name --output tsv 2>$null
     $operation = if ($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace($existingRule)) { 'update' } else { 'create' }
     $arguments = @(
         'network', 'nsg', 'rule', $operation,
-        '--resource-group', $networkResourceGroupName,
+        '--resource-group', $FoundationResourceGroupName,
         '--nsg-name', $nsgName,
         '--name', $rule.Name,
         '--priority', $rule.Priority,

@@ -100,6 +100,12 @@ param rdpAllowRules rdpAllowRuleConfig[] = []
 @maxLength(4)
 param nameSuffix string
 
+@description('Instance number appended to resource group names, allowing multiple parallel instances per environment.')
+param resourceGroupInstance string = '001'
+
+@description('Resource ID of an existing managed disk to attach to the jumpbox VM instead of creating one from image. Used only for the one-time migration of a pre-existing VM disk; leave empty otherwise.')
+param vmExistingOsDiskId string = ''
+
 @description('Resource tags to apply across all modules.')
 param tags object
 
@@ -123,6 +129,33 @@ param deployStorage bool = true
 
 @description('Deploy the Log Analytics workspace. Set to false to remove it; required when audit diagnostics are enabled.')
 param deployLogAnalytics bool = true
+
+@description('Deploy the Azure Database for PostgreSQL Flexible Server, its delegated subnet, and its private DNS zone. Sized to the Azure free-tier allowance (Burstable B1ms, 32 GiB, HA disabled). Set to false to remove them.')
+param deployPostgres bool = true
+
+@description('Address prefix for the PostgreSQL Flexible Server delegated subnet.')
+param postgresSubnetAddressPrefix string = '10.0.3.0/24'
+
+@description('PostgreSQL Flexible Server compute SKU name. Standard_B1ms keeps the server within the Azure free-tier compute allowance.')
+param postgresSkuName string = 'Standard_B1ms'
+
+@description('PostgreSQL major version.')
+param postgresVersion string = '16'
+
+@description('PostgreSQL Flexible Server storage size in GiB. 32 GiB keeps the server within the Azure free-tier storage allowance.')
+param postgresStorageSizeGB int = 32
+
+@description('PostgreSQL Flexible Server backup retention in days.')
+@minValue(7)
+@maxValue(35)
+param postgresBackupRetentionDays int = 7
+
+@description('PostgreSQL Flexible Server administrator login name.')
+param postgresAdminUsername string = 'pgadmin'
+
+@secure()
+@description('PostgreSQL Flexible Server administrator login password.')
+param postgresAdminPassword string = ''
 
 @description('Deploy the AI Foundry hub, project, and hub private endpoint. Set to false to remove them.')
 param deployAiFoundry bool = true
@@ -229,37 +262,36 @@ var effectiveTags = union(tags, {
   lastModifiedDate: lastModifiedDate
 })
 
-var coreResourceGroupName    = 'rg-${baseName}-core-${environmentSuffix}-${nameSuffix}'
-var networkResourceGroupName = 'rg-${baseName}-network-${environmentSuffix}-${nameSuffix}'
-var storageAccountName       = 'st${baseName}${environmentSuffix}${nameSuffix}'
-var keyVaultName             = 'kv-${baseName}-${environmentSuffix}-${nameSuffix}'
-var openAiAccountName        = 'oai-${baseName}-${environmentSuffix}-${nameSuffix}'
-var hubName                  = 'hub-${baseName}-${environmentSuffix}-${nameSuffix}'
-var projectName              = 'proj-${baseName}-${environmentSuffix}-${nameSuffix}'
-var hubManagedIdentityName   = 'mi-${baseName}-hub-${environmentSuffix}-${nameSuffix}'
-var vmManagedIdentityName    = 'mi-${baseName}-vm-${environmentSuffix}-${nameSuffix}'
-var automationManagedIdentityName = 'mi-${baseName}-automation-${environmentSuffix}-${nameSuffix}'
-var automationAccountName    = 'aa-${baseName}-${environmentSuffix}-${nameSuffix}'
+var workloadResourceGroupName    = 'rg-${baseName}-workload-${environmentSuffix}-${resourceGroupInstance}'
+var foundationResourceGroupName  = 'rg-${baseName}-foundation-${environmentSuffix}-${resourceGroupInstance}'
+var storageAccountName       = 'st${baseName}${environmentSuffix}${nameSuffix}${replace(resourceGroupInstance, '-', '')}'
+var keyVaultName             = 'kv-${baseName}-${environmentSuffix}-${nameSuffix}-${resourceGroupInstance}'
+var openAiAccountName        = 'oai-${baseName}-${environmentSuffix}-${nameSuffix}-${resourceGroupInstance}'
+var hubName                  = 'hub-${baseName}-${environmentSuffix}-${resourceGroupInstance}'
+var projectName              = 'proj-${baseName}-${environmentSuffix}-${resourceGroupInstance}'
+var sharedManagedIdentityName = 'mi-${baseName}-${environmentSuffix}-${resourceGroupInstance}'
+var automationAccountName    = 'aa-${baseName}-${environmentSuffix}-${resourceGroupInstance}'
 var vmStartScheduleName      = 'schedule-vm-start-daily'
 var rdpDeployerCleanupScheduleName = 'delete-rdp-deployer-weekly'
-var vnetName                 = 'vnet-${baseName}-${environmentSuffix}-${nameSuffix}'
-var vmName                   = 'vm-${baseName}-${environmentSuffix}-${nameSuffix}'
-var lawWorkspaceName         = 'law-${baseName}-${environmentSuffix}-${nameSuffix}'
-resource coreRg 'Microsoft.Resources/resourceGroups@2024-07-01' = {
-  name: coreResourceGroupName
+var vnetName                 = 'vnet-${baseName}-${environmentSuffix}-${resourceGroupInstance}'
+var vmName                   = 'vm-${baseName}-${environmentSuffix}-${resourceGroupInstance}'
+var lawWorkspaceName         = 'law-${baseName}-${environmentSuffix}-${resourceGroupInstance}'
+var postgresServerName       = 'psql-${baseName}-${environmentSuffix}-${nameSuffix}-${resourceGroupInstance}'
+resource workloadRg 'Microsoft.Resources/resourceGroups@2024-07-01' = {
+  name: workloadResourceGroupName
   location: location
   tags: effectiveTags
 }
 
-resource networkRg 'Microsoft.Resources/resourceGroups@2024-07-01' = {
-  name: networkResourceGroupName
+resource foundationRg 'Microsoft.Resources/resourceGroups@2024-07-01' = {
+  name: foundationResourceGroupName
   location: location
   tags: effectiveTags
 }
 
 module networkModule '../modules/network.bicep' = {
   name: 'networkDeployment'
-  scope: networkRg
+  scope: foundationRg
   params: {
     vnetName: vnetName
     location: location
@@ -272,35 +304,17 @@ module networkModule '../modules/network.bicep' = {
     rdpAllowRules: rdpAllowRules
     deployVmNetworking: deployVm
     publicIpDnsNameLabel: vmPublicIpDnsNameLabel
-    automationPrincipalId: deployAutomation ? automationManagedIdentityModule!.outputs.principalId : ''
+    automationPrincipalId: deployAutomation ? sharedManagedIdentityModule.outputs.principalId : ''
+    deployPostgres: deployPostgres
+    postgresSubnetAddressPrefix: postgresSubnetAddressPrefix
   }
 }
 
-module hubManagedIdentityModule '../modules/managedidentity.bicep' = {
-  name: 'hubManagedIdentityDeployment'
-  scope: coreRg
+module sharedManagedIdentityModule '../modules/managedidentity.bicep' = {
+  name: 'sharedManagedIdentityDeployment'
+  scope: foundationRg
   params: {
-    identityName: hubManagedIdentityName
-    location: location
-    tags: effectiveTags
-  }
-}
-
-module vmManagedIdentityModule '../modules/managedidentity.bicep' = {
-  name: 'vmManagedIdentityDeployment'
-  scope: coreRg
-  params: {
-    identityName: vmManagedIdentityName
-    location: location
-    tags: effectiveTags
-  }
-}
-
-module automationManagedIdentityModule '../modules/managedidentity.bicep' = if (deployAutomation) {
-  name: 'automationManagedIdentityDeployment'
-  scope: coreRg
-  params: {
-    identityName: automationManagedIdentityName
+    identityName: sharedManagedIdentityName
     location: location
     tags: effectiveTags
   }
@@ -315,7 +329,7 @@ var effectiveAdminActors = !empty(adminActors) ? adminActors : legacyAdminActors
 
 module storageModule '../modules/storageaccount.bicep' = if (deployStorage) {
   name: 'storageDeployment'
-  scope: coreRg
+  scope: workloadRg
   params: {
     storageAccountName: storageAccountName
     location: location
@@ -330,7 +344,7 @@ module storageModule '../modules/storageaccount.bicep' = if (deployStorage) {
 
 module keyVaultModule '../modules/keyvault.bicep' = {
   name: 'keyVaultDeployment'
-  scope: coreRg
+  scope: workloadRg
   params: {
     keyVaultName: keyVaultName
     location: location
@@ -343,7 +357,7 @@ module keyVaultModule '../modules/keyvault.bicep' = {
 
 module lawModule '../modules/loganalytics.bicep' = if (deployLogAnalytics) {
   name: 'logAnalyticsDeployment'
-  scope: coreRg
+  scope: workloadRg
   params: {
     workspaceName: lawWorkspaceName
     location: location
@@ -355,9 +369,27 @@ module lawModule '../modules/loganalytics.bicep' = if (deployLogAnalytics) {
 // Diagnostics are wired only when Log Analytics is deployed; an empty ID disables them in the modules.
 var logAnalyticsWorkspaceResourceId = deployLogAnalytics ? lawModule!.outputs.id : ''
 
+module postgresModule '../modules/postgresflexibleserver.bicep' = if (deployPostgres) {
+  name: 'postgresDeployment'
+  scope: workloadRg
+  params: {
+    serverName: postgresServerName
+    location: location
+    skuName: postgresSkuName
+    postgresVersion: postgresVersion
+    storageSizeGB: postgresStorageSizeGB
+    backupRetentionDays: postgresBackupRetentionDays
+    administratorLogin: postgresAdminUsername
+    administratorLoginPassword: postgresAdminPassword
+    delegatedSubnetResourceId: networkModule.outputs.postgresSubnetId
+    privateDnsZoneResourceId: networkModule.outputs.postgresDnsZoneId
+    tags: effectiveTags
+  }
+}
+
 module openAiModule '../modules/openai.bicep' = {
   name: 'openAiDeployment'
-  scope: coreRg
+  scope: workloadRg
   params: {
     openAiAccountName: openAiAccountName
     location: location
@@ -370,14 +402,13 @@ module openAiModule '../modules/openai.bicep' = {
 
 module managedIdentityRolesModule '../modules/managedidentityroles.bicep' = {
   name: 'managedIdentityRolesDeployment'
-  scope: coreRg
+  scope: workloadRg
   params: {
     storageAccountName: storageAccountName
     keyVaultName: keyVaultName
     openAiAccountName: openAiAccountName
     grantStorageRole: deployStorage
-    hubIdentityPrincipalId: hubManagedIdentityModule.outputs.principalId
-    vmIdentityPrincipalId: vmManagedIdentityModule.outputs.principalId
+    sharedIdentityPrincipalId: sharedManagedIdentityModule.outputs.principalId
   }
   dependsOn: [
     storageModule
@@ -388,7 +419,7 @@ module managedIdentityRolesModule '../modules/managedidentityroles.bicep' = {
 
 module storagePrivateEndpointModule '../modules/privateendpoint.bicep' = if (deployStorage) {
   name: 'storagePrivateEndpointDeployment'
-  scope: networkRg
+  scope: foundationRg
   params: {
     privateEndpointName: '${storageAccountName}-blob-pe'
     location: location
@@ -402,7 +433,7 @@ module storagePrivateEndpointModule '../modules/privateendpoint.bicep' = if (dep
 
 module keyVaultPrivateEndpointModule '../modules/privateendpoint.bicep' = {
   name: 'keyVaultPrivateEndpointDeployment'
-  scope: networkRg
+  scope: foundationRg
   params: {
     privateEndpointName: '${keyVaultName}-pe'
     location: location
@@ -416,7 +447,7 @@ module keyVaultPrivateEndpointModule '../modules/privateendpoint.bicep' = {
 
 module openAiPrivateEndpointModule '../modules/privateendpoint.bicep' = {
   name: 'openAiPrivateEndpointDeployment'
-  scope: networkRg
+  scope: foundationRg
   params: {
     privateEndpointName: '${openAiAccountName}-account-pe'
     location: location
@@ -430,7 +461,7 @@ module openAiPrivateEndpointModule '../modules/privateendpoint.bicep' = {
 
 module aiHubModule '../modules/aihub.bicep' = if (deployAiFoundry) {
   name: 'aiHubDeployment'
-  scope: coreRg
+  scope: workloadRg
   params: {
     hubName: hubName
     location: location
@@ -438,7 +469,7 @@ module aiHubModule '../modules/aihub.bicep' = if (deployAiFoundry) {
     keyVaultResourceId: keyVaultModule.outputs.id
     openAiEndpoint: openAiModule.outputs.endpoint
     openAiResourceId: openAiModule.outputs.id
-    identityId: hubManagedIdentityModule.outputs.id
+    identityId: sharedManagedIdentityModule.outputs.id
     logAnalyticsWorkspaceResourceId: logAnalyticsWorkspaceResourceId
     tags: effectiveTags
   }
@@ -446,18 +477,23 @@ module aiHubModule '../modules/aihub.bicep' = if (deployAiFoundry) {
 
 module aiProjectModule '../modules/aiproject.bicep' = if (deployAiFoundry) {
   name: 'aiProjectDeployment'
-  scope: coreRg
+  scope: workloadRg
   params: {
     projectName: projectName
     location: location
     hubResourceId: aiHubModule!.outputs.id
+    identityId: sharedManagedIdentityModule.outputs.id
     tags: effectiveTags
   }
+  dependsOn: [
+    managedIdentityRolesModule
+    aiHubModule
+  ]
 }
 
 module aiHubPrivateEndpointModule '../modules/privateendpoint.bicep' = if (deployAiFoundry && privateAiWorkspacesOnly) {
   name: 'aiHubPrivateEndpointDeployment'
-  scope: networkRg
+  scope: foundationRg
   params: {
     privateEndpointName: '${hubName}-pe'
     location: location
@@ -471,11 +507,11 @@ module aiHubPrivateEndpointModule '../modules/privateendpoint.bicep' = if (deplo
 
 module vmModule '../modules/vm.bicep' = if (deployVm) {
   name: 'vmDeployment'
-  scope: coreRg
+  scope: workloadRg
   params: {
     vmName: vmName
     location: location
-    identityId: vmManagedIdentityModule.outputs.id
+    identityId: sharedManagedIdentityModule.outputs.id
     nicId: networkModule.outputs.nicId
     keyVaultUrl: keyVaultModule.outputs.vaultUri
     keyVaultResourceId: keyVaultModule.outputs.id
@@ -487,6 +523,7 @@ module vmModule '../modules/vm.bicep' = if (deployVm) {
     imageSku: vmImageSku
     imageVersion: vmImageVersion
     osDiskStorageAccountType: vmOsDiskStorageAccountType
+    existingOsDiskId: vmExistingOsDiskId
     useSpotVm: vmUseSpot
     spotMaxPrice: vmSpotMaxPrice
     autoShutdownEnabled: vmAutoShutdownEnabled
@@ -498,12 +535,12 @@ module vmModule '../modules/vm.bicep' = if (deployVm) {
 
 module automationModule '../modules/automation.bicep' = if (deployAutomation) {
   name: 'automationDeployment'
-  scope: coreRg
+  scope: workloadRg
   params: {
     automationAccountName: automationAccountName
     location: location
-    identityId: automationManagedIdentityModule!.outputs.id
-    identityPrincipalId: automationManagedIdentityModule!.outputs.principalId
+    identityId: sharedManagedIdentityModule.outputs.id
+    identityPrincipalId: sharedManagedIdentityModule.outputs.principalId
     runtimeVersion: automationRuntimeVersion
     azPackageVersion: automationAzVersion
     runbooks: automationRunbooks
@@ -522,7 +559,7 @@ module automationModule '../modules/automation.bicep' = if (deployAutomation) {
 
 module actorRolesModule '../modules/actorroles.bicep' = if (!empty(effectiveAdminActors) || !empty(userActors)) {
   name: 'actorRolesDeployment'
-  scope: coreRg
+  scope: workloadRg
   params: {
     adminActors: effectiveAdminActors
     userActors: userActors
@@ -547,7 +584,7 @@ module actorRolesModule '../modules/actorroles.bicep' = if (!empty(effectiveAdmi
 
 module networkRolesModule '../modules/networkroles.bicep' = if (!empty(effectiveAdminActors) || !empty(userActors)) {
   name: 'networkRolesDeployment'
-  scope: networkRg
+  scope: foundationRg
   params: {
     adminActors: effectiveAdminActors
     userActors: userActors
@@ -563,16 +600,10 @@ output deploymentName string = openAiModule.outputs.deploymentName
 output secondaryDeploymentName string = openAiModule.outputs.secondaryDeploymentName
 output hubName string = deployAiFoundry ? aiHubModule!.outputs.name : ''
 output projectName string = deployAiFoundry ? aiProjectModule!.outputs.name : ''
-output hubManagedIdentityId string = hubManagedIdentityModule.outputs.id
-output hubManagedIdentityPrincipalId string = hubManagedIdentityModule.outputs.principalId
-output hubManagedIdentityClientId string = hubManagedIdentityModule.outputs.clientId
-output vmManagedIdentityId string = vmManagedIdentityModule.outputs.id
-output vmManagedIdentityPrincipalId string = vmManagedIdentityModule.outputs.principalId
-output vmManagedIdentityClientId string = vmManagedIdentityModule.outputs.clientId
+output sharedManagedIdentityId string = sharedManagedIdentityModule.outputs.id
+output sharedManagedIdentityPrincipalId string = sharedManagedIdentityModule.outputs.principalId
+output sharedManagedIdentityClientId string = sharedManagedIdentityModule.outputs.clientId
 output automationAccountName string = deployAutomation ? automationModule!.outputs.accountName : ''
-output automationManagedIdentityId string = deployAutomation ? automationManagedIdentityModule!.outputs.id : ''
-output automationManagedIdentityPrincipalId string = deployAutomation ? automationManagedIdentityModule!.outputs.principalId : ''
-output automationManagedIdentityClientId string = deployAutomation ? automationManagedIdentityModule!.outputs.clientId : ''
 output automationRunbookNames array = deployAutomation ? automationModule!.outputs.runbookNames : []
 output vmStartScheduleName string = deployAutomation ? automationModule!.outputs.scheduleName : ''
 output automationJobScheduleName string = deployAutomation ? automationModule!.outputs.jobScheduleName : ''
@@ -585,3 +616,5 @@ output vmPublicIpFqdn string = networkModule.outputs.publicIpFqdn
 output storageAccountName string = deployStorage ? storageModule!.outputs.name : ''
 output logAnalyticsWorkspaceId string = logAnalyticsWorkspaceResourceId
 output logAnalyticsWorkspaceName string = deployLogAnalytics ? lawModule!.outputs.name : ''
+output postgresServerName string = deployPostgres ? postgresModule!.outputs.name : ''
+output postgresServerFqdn string = deployPostgres ? postgresModule!.outputs.fqdn : ''

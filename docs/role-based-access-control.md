@@ -20,14 +20,10 @@ Creating these assignments requires role-assignment write permission (`Owner` or
 ```
 Principal                          Scope               Role Definition Name
 ─────────────────────────────────────────────────────────────────────────────────────────────
-AI Hub Managed Identity            Storage Account     Storage Blob Data Contributor
-AI Hub Managed Identity            Key Vault           Key Vault Secrets User
-AI Hub Managed Identity            Azure OpenAI        Cognitive Services OpenAI User
-─────────────────────────────────────────────────────────────────────────────────────────────
-VM Managed Identity                Key Vault           Key Vault Secrets User
-VM Managed Identity                Azure OpenAI        Cognitive Services OpenAI User
-─────────────────────────────────────────────────────────────────────────────────────────────
-Automation Managed Identity        Jumpbox VM          Virtual Machine Contributor
+Shared Managed Identity             Storage Account     Storage Blob Data Contributor
+Shared Managed Identity             Key Vault           Key Vault Secrets User
+Shared Managed Identity             Azure OpenAI        Cognitive Services OpenAI User
+Shared Managed Identity             Jumpbox VM          Virtual Machine Contributor
 ─────────────────────────────────────────────────────────────────────────────────────────────
 Deploying Identity (SP/User)       Key Vault           Key Vault Secrets Officer
 ─────────────────────────────────────────────────────────────────────────────────────────────
@@ -48,16 +44,16 @@ User Actors (Operational Access)   Log Analytics       Log Analytics Reader, Mon
 User Actors (Operational Access)   Resource Groups     Reader
 ```
 
+> **Single-identity trade-off:** the roles above the "Deploying Identity" line that used to be split across three identities (Hub, VM, Automation) are now all granted to one shared identity. See [Managed Identity Documentation](managed-identity.md) for the accepted blast-radius trade-off this implies.
+
 ## Detailed Role Assignments Table
 
 | Principal | Role Definition Name | Role Definition ID (GUID) | Target Resource Scope | Reason / Purpose |
 |---|---|---|---|---|
-| **AI Hub Identity** | `Storage Blob Data Contributor` | `ba92f5b4-2d11-453d-a403-e96b0029c9fe` | Backing Storage Account | Read/write access to AI project experiment and model artifacts |
-| **AI Hub Identity** | `Key Vault Secrets User` | `4633458b-17de-408a-b874-0445c86b69e6` | Key Vault | Read secrets for AI connection configurations |
-| **AI Hub Identity** | `Cognitive Services OpenAI User` | `5e0bd9bd-7b93-4f28-af87-19fc36ad61bd` | Azure OpenAI Account | Authorize AI Hub connection to OpenAI endpoints via AAD |
-| **VM Managed Identity** | `Key Vault Secrets User` | `4633458b-17de-408a-b874-0445c86b69e6` | Key Vault | Read VM admin credentials and configuration secrets |
-| **VM Managed Identity** | `Cognitive Services OpenAI User` | `5e0bd9bd-7b93-4f28-af87-19fc36ad61bd` | Azure OpenAI Account | Authorize Python Chat App to invoke model inference |
-| **Automation Identity** | `Virtual Machine Contributor` | `9980e02c-c2be-4d73-94e8-173b1dc7cf3c` | Jumpbox VM | Read VM state and start the VM from the daily runbook |
+| **Shared Managed Identity** | `Storage Blob Data Contributor` | `ba92f5b4-2d11-453d-a403-e96b0029c9fe` | Backing Storage Account | Read/write access to AI project experiment and model artifacts |
+| **Shared Managed Identity** | `Key Vault Secrets User` | `4633458b-17de-408a-b874-0445c86b69e6` | Key Vault | Read secrets for AI connections and the Python Chat App |
+| **Shared Managed Identity** | `Cognitive Services OpenAI User` | `5e0bd9bd-7b93-4f28-af87-19fc36ad61bd` | Azure OpenAI Account | Authorize AI Hub connection and the Chat App to invoke model inference |
+| **Shared Managed Identity** | `Virtual Machine Contributor` | `9980e02c-c2be-4d73-94e8-173b1dc7cf3c` | Jumpbox VM | Read VM state and start the VM from the daily Automation runbook |
 | **Deploying Identity** | `Key Vault Secrets Officer` | `b86a8fe4-44ce-4948-aee5-eccb2c155cd7` | Key Vault | Write/sync secrets (VM admin password) during ARM deployment |
 | **Admin Actors** | `Key Vault Administrator` | `00482a5a-887f-4fb3-b363-3b7fe8e74483` | Key Vault | Manage keys, secrets, and certificates for administrators |
 | **Admin Actors** | `Key Vault Secrets Officer` | `b86a8fe4-44ce-4948-aee5-eccb2c155cd7` | Key Vault | Manage secrets for administrators and first-run setup |

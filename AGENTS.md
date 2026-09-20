@@ -2,7 +2,7 @@
 
 ## Repository purpose
 
-This repository deploys a private Azure AI Foundry learning environment with standalone Bicep and PowerShell. It includes Azure OpenAI model deployments, AI Hub and Project workspaces, private networking, Key Vault, Storage, Log Analytics, managed identities, and a Windows jumpbox that hosts the Python chat application.
+This repository deploys a private Azure AI Foundry learning environment with standalone Bicep and PowerShell. It includes Azure OpenAI model deployments, AI Hub and Project workspaces, private networking, Key Vault, Storage, a free-tier-sized PostgreSQL Flexible Server, Log Analytics, managed identities, and a Windows jumpbox that hosts the Python chat application.
 
 ## Source map
 
@@ -10,10 +10,10 @@ This repository deploys a private Azure AI Foundry learning environment with sta
 - `bicep/modules/` contains resource-focused Bicep modules.
 - `variables/core.yaml` contains shared non-SKU defaults.
 - `variables/dev.yaml` and `variables/uat.yaml` contain environment naming, identity, SKU, capacity, RDP allowlist, and pipeline values.
-- `scripts/config.ps1` merges and validates YAML configuration.
-- `scripts/deploy.ps1` non-interactively updates Bicep, validates Azure context, exits early for already-current environments, deploys Bicep when needed, publishes runbooks before linking schedules, writes Key Vault secrets through ARM, bootstraps the VM through Run Command, applies the VM password, and emits a timing summary for performance tuning.
+- `scripts/config.ps1` merges and validates YAML configuration, including the environment-owned Azure subscription ID used for CLI context selection and the subscription-derived name suffix.
+- `scripts/deploy.ps1` non-interactively updates Bicep, validates Azure context against the configured environment subscription, exits early for already-current environments, deploys Bicep when needed, publishes runbooks before linking schedules, writes Key Vault secrets through ARM, bootstraps the VM through Run Command, applies the VM password, and emits a timing summary for performance tuning. Resource provider registration and the Bicep CLI latest-version check are cached per subscription in ignored `.local/cache/subscription-state.json` (see `scripts/README.md`) to skip redundant checks on reruns.
 - `automation/` contains PowerShell runbooks automatically validated and published by `scripts/deploy.ps1`.
-- `scripts/test.ps1` provides `Static`, `Validate`, `Smoke`, and `ChatDual` modes; static Bicep builds use the platform temporary directory so local and Linux CI runs behave consistently.
+- `scripts/test.ps1` provides `Static`, `Validate`, `Smoke`, and `ChatDual` modes; `Validate` checks the configured image and Azure Disk Encryption extension for normal VMs or the configured attached OS disk and retained encryption for migrations, and static Bicep builds use the platform temporary directory so local and Linux CI runs behave consistently.
 - `scripts/scan.ps1` validates generated IaC security invariants.
 - `scripts/cleanup.ps1` deletes resources from tag-validated environment resource groups while preserving Key Vault and the VM OS disk.
 - `main.ps1` dispatches `dev|uat-connect`, `dev|uat-deploy`, and `dev|uat-clean` operations.
@@ -35,7 +35,7 @@ This repository deploys a private Azure AI Foundry learning environment with sta
 - Do not reintroduce workstation Key Vault or Storage data-plane operations. The deployment host writes secret resources through ARM; app files reach the VM through Run Command.
 - Never print or persist VM credentials in CI logs or workspaces. Local credential output belongs only under ignored `.local/`.
 - Never rotate the VM admin password on a rerun. A new password is issued only on first deploy, when the VM is being recreated, or when `-RotateVmPassword` is passed.
-- Never remove Key Vault, networking, private DNS, Azure OpenAI, their private endpoints, or the managed identities. Only flagged components (`deployStorage`, `deployLogAnalytics`, `deployAiFoundry`, `deployVm`, `deployAutomation`) may be removed, and `deployVm: false` must also delete the OS disk.
+- Never remove Key Vault, networking, private DNS, Azure OpenAI, their private endpoints, or the managed identities. Only flagged components (`deployStorage`, `deployLogAnalytics`, `deployAiFoundry`, `deployVm`, `deployAutomation`, `deployPostgres`) may be removed, and `deployVm: false` must also delete the OS disk.
 - Never commit user configuration. Only `variables/*.yaml.example` templates are tracked, and no other file may contain a specific user's region, prefix, object IDs, SKUs, or time zones.
 
 ## Configuration rules

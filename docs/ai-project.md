@@ -10,7 +10,7 @@ This component is controlled by `deployAiFoundry` in your environment YAML, toge
 
 The AI Foundry Project workspace provides the developer canvas for evaluating prompt flows, fine-tuning, building AI agents, and experimenting with models. It inherits connections, security policies, storage, and keys from its parent AI Hub.
 
-- **Resource Name:** `proj-<baseName>-<environmentSuffix>-<nameSuffix>`
+- **Resource Name:** `proj-<baseName>-<environmentSuffix>`
 - **Resource Type:** `Microsoft.MachineLearningServices/workspaces@2024-10-01`
 - **Kind:** `Project`
 - **SKU:** `Basic`

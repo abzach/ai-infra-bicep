@@ -10,7 +10,7 @@ This component is controlled by `deployLogAnalytics` in your environment YAML. W
 
 The Log Analytics workspace collects operational telemetry, audit events, access logs, and performance metrics from Azure OpenAI, Azure AI Foundry Hub, and the Jumpbox VM.
 
-- **Resource Name:** `law-<baseName>-<environmentSuffix>-<nameSuffix>`
+- **Resource Name:** `law-<baseName>-<environmentSuffix>`
 - **Resource Type:** `Microsoft.OperationalInsights/workspaces@2023-09-01`
 - **SKU:** `PerGB2018`
 

@@ -41,7 +41,13 @@ param publicIpDnsNameLabel string = ''
 @description('Automation managed identity principal ID granted Network Contributor on the jumpbox NSG. Leave empty to skip.')
 param automationPrincipalId string = ''
 
-var subnets = [
+@description('Deploy the PostgreSQL Flexible Server delegated subnet and private DNS zone. Set to false when the PostgreSQL Flexible Server is not deployed.')
+param deployPostgres bool = false
+
+@description('Address prefix for the PostgreSQL Flexible Server delegated subnet.')
+param postgresSubnetAddressPrefix string = '10.0.3.0/24'
+
+var baseSubnets = [
   {
     name: 'services'
     addressPrefix: servicesSubnetAddressPrefix
@@ -51,6 +57,13 @@ var subnets = [
     addressPrefix: vmSubnetAddressPrefix
   }
 ]
+
+var postgresSubnetDefinition = {
+  name: 'postgres'
+  addressPrefix: postgresSubnetAddressPrefix
+}
+
+var subnets = deployPostgres ? concat(baseSubnets, [postgresSubnetDefinition]) : baseSubnets
 
 resource vnet 'Microsoft.Network/virtualNetworks@2024-01-01' = {
   name: vnetName
@@ -67,8 +80,16 @@ resource vnet 'Microsoft.Network/virtualNetworks@2024-01-01' = {
       properties: {
         addressPrefix: subnet.addressPrefix
         privateEndpointNetworkPolicies: 'Disabled'
-        privateLinkServiceNetworkPolicies: 'Enabled'
-        serviceEndpoints: [
+        privateLinkServiceNetworkPolicies: subnet.name == 'postgres' ? 'Disabled' : 'Enabled'
+        delegations: subnet.name == 'postgres' ? [
+          {
+            name: 'postgresFlexibleServerDelegation'
+            properties: {
+              serviceName: 'Microsoft.DBforPostgreSQL/flexibleServers'
+            }
+          }
+        ] : []
+        serviceEndpoints: subnet.name == 'postgres' ? [] : [
           {
             service: 'Microsoft.CognitiveServices'
           }
@@ -101,6 +122,11 @@ resource storageDnsZone 'Microsoft.Network/privateDnsZones@2020-06-01' = {
 
 resource amlApiDnsZone 'Microsoft.Network/privateDnsZones@2020-06-01' = {
   name: 'privatelink.api.azureml.ms'
+  location: 'global'
+}
+
+resource postgresDnsZone 'Microsoft.Network/privateDnsZones@2020-06-01' = if (deployPostgres) {
+  name: 'privatelink.postgres.database.azure.com'
   location: 'global'
 }
 
@@ -142,6 +168,18 @@ resource storageDnsVnetLink 'Microsoft.Network/privateDnsZones/virtualNetworkLin
 
 resource amlApiDnsVnetLink 'Microsoft.Network/privateDnsZones/virtualNetworkLinks@2020-06-01' = {
   parent: amlApiDnsZone
+  name: 'vnet-link'
+  location: 'global'
+  properties: {
+    registrationEnabled: false
+    virtualNetwork: {
+      id: vnet.id
+    }
+  }
+}
+
+resource postgresDnsVnetLink 'Microsoft.Network/privateDnsZones/virtualNetworkLinks@2020-06-01' = if (deployPostgres) {
+  parent: postgresDnsZone
   name: 'vnet-link'
   location: 'global'
   properties: {
@@ -266,6 +304,8 @@ output kvDnsZoneId string = kvDnsZone.id
 output oaiDnsZoneId string = oaiDnsZone.id
 output storageDnsZoneId string = storageDnsZone.id
 output amlApiDnsZoneId string = amlApiDnsZone.id
+output postgresSubnetId string = deployPostgres ? vnet.properties.subnets[2].id : ''
+output postgresDnsZoneId string = deployPostgres ? postgresDnsZone!.id : ''
 output nicId string = deployVmNetworking ? nic!.id : ''
 output nicName string = deployVmNetworking ? nic!.name : ''
 output privateIp string = deployVmNetworking ? nic!.properties.ipConfigurations[0].properties.privateIPAddress : ''

@@ -10,7 +10,7 @@ This component is controlled by `deployAiFoundry` in your environment YAML. When
 
 The AI Foundry Hub workspace serves as the centralized management, governance, security, and resource-sharing control plane for AI teams and child AI Projects.
 
-- **Resource Name:** `hub-<baseName>-<environmentSuffix>-<nameSuffix>`
+- **Resource Name:** `hub-<baseName>-<environmentSuffix>`
 - **Resource Type:** `Microsoft.MachineLearningServices/workspaces@2024-10-01`
 - **Kind:** `Hub`
 - **SKU:** `Basic`

@@ -22,51 +22,98 @@ function Convert-ConfigScalar {
 
 # ---------------------------------------------------------------------------
 # Get-EnterpriseResourceNames
-#   Computes all Azure resource names from the three naming inputs so that
+#   Computes all Azure resource names from the naming inputs so that
 #   every script uses the same deterministic naming scheme.
 #
 #   Parameters
-#     BaseName          Short workload prefix (max 5-8 lowercase alphanumeric characters)
-#     EnvironmentSuffix Environment token: "dev" or "uat"
-#     NameSuffix        Optional 4-char subscription-derived suffix for global uniqueness
+#     BaseName             Short workload prefix (max 5-8 lowercase alphanumeric characters)
+#     EnvironmentSuffix    Environment token: "dev" or "uat"
+#     ResourceGroupInstance Instance number suffix for the two resource group names (e.g. "001")
+#     NameSuffix           Optional 4-char subscription-derived suffix for global uniqueness,
+#                          applied only to Storage Account, Key Vault, and Azure OpenAI account
 #
 #   Returns a pscustomobject with properties:
-#     coreResourceGroupName, networkResourceGroupName, storageAccountName,
+#     workloadResourceGroupName, foundationResourceGroupName, storageAccountName,
 #     keyVaultName, openAiAccountName, hubName, projectName,
-#     hubManagedIdentityName, vmManagedIdentityName, automationManagedIdentityName,
-#     automationAccountName, vnetName, vmName, lawWorkspaceName
+#     sharedManagedIdentityName, automationAccountName, vnetName, vmName, lawWorkspaceName
 # ---------------------------------------------------------------------------
 function Get-EnterpriseResourceNames {
     param(
         [Parameter(Mandatory)] [string] $BaseName,
         [Parameter(Mandatory)] [string] $EnvironmentSuffix,
+        [string] $ResourceGroupInstance = '001',
         [string] $NameSuffix = ''
     )
 
     $n   = $BaseName.ToLower()
     $env = $EnvironmentSuffix.ToLower()
+    $instance = $ResourceGroupInstance.ToLower()
+    $instanceRaw = $instance -replace '-', ''
     $sfx = if ([string]::IsNullOrWhiteSpace($NameSuffix)) { '' } else { "-$($NameSuffix.ToLower())" }
     $raw = $NameSuffix.ToLower()
 
     return [pscustomobject]@{
-        coreResourceGroupName    = "rg-${n}-core-${env}${sfx}"
-        networkResourceGroupName = "rg-${n}-network-${env}${sfx}"
-        storageAccountName       = "st${n}${env}${raw}"
-        keyVaultName             = "kv-${n}-${env}${sfx}"
-        openAiAccountName        = "oai-${n}-${env}${sfx}"
-        hubName                  = "hub-${n}-${env}${sfx}"
-        projectName              = "proj-${n}-${env}${sfx}"
-        hubManagedIdentityName   = "mi-${n}-hub-${env}${sfx}"
-        vmManagedIdentityName    = "mi-${n}-vm-${env}${sfx}"
-        automationManagedIdentityName = "mi-${n}-automation-${env}${sfx}"
-        automationAccountName    = "aa-${n}-${env}${sfx}"
+        workloadResourceGroupName    = "rg-${n}-workload-${env}-${instance}"
+        foundationResourceGroupName  = "rg-${n}-foundation-${env}-${instance}"
+        storageAccountName       = "st${n}${env}${raw}${instanceRaw}"
+        keyVaultName             = "kv-${n}-${env}${sfx}-${instance}"
+        openAiAccountName        = "oai-${n}-${env}${sfx}-${instance}"
+        hubName                  = "hub-${n}-${env}-${instance}"
+        projectName              = "proj-${n}-${env}-${instance}"
+        sharedManagedIdentityName = "mi-${n}-${env}-${instance}"
+        automationAccountName    = "aa-${n}-${env}-${instance}"
         vmStartScheduleName      = 'schedule-vm-start-daily'
         rdpDeployerCleanupScheduleName = 'delete-rdp-deployer-weekly'
-        legacyManagedIdentityName = "mi-${n}-${env}${sfx}"
-        vnetName                 = "vnet-${n}-${env}${sfx}"
-        vmName                   = "vm-${n}-${env}${sfx}"
-        lawWorkspaceName         = "law-${n}-${env}${sfx}"
+        vnetName                 = "vnet-${n}-${env}-${instance}"
+        vmName                   = "vm-${n}-${env}-${instance}"
+        lawWorkspaceName         = "law-${n}-${env}-${instance}"
+        postgresServerName       = "psql-${n}-${env}${sfx}-${instance}"
     }
+}
+
+function Get-EnterpriseConfigValue {
+    param(
+        [Parameter(Mandatory)] [object] $Config,
+        [Parameter(Mandatory)] [string] $Key
+    )
+
+    if ($Config -is [System.Collections.IDictionary] -and $Config.Contains($Key)) {
+        return $Config[$Key]
+    }
+    if ($Config.PSObject.Properties[$Key]) {
+        return $Config.$Key
+    }
+    return $null
+}
+
+function Get-EnterpriseSubscriptionNameSuffix {
+    param([Parameter(Mandatory)] [string] $SubscriptionId)
+
+    $trimmedSubscriptionId = $SubscriptionId.Trim()
+    if ($trimmedSubscriptionId -notmatch '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$') {
+        throw "subscriptionId '$SubscriptionId' is not a valid Azure subscription GUID."
+    }
+
+    return ($trimmedSubscriptionId -replace '-', '').Substring(0, 4).ToLower()
+}
+
+function Set-EnterpriseAzureSubscriptionContext {
+    param([Parameter(Mandatory)] [object] $Config)
+
+    $subscriptionId = [string](Get-EnterpriseConfigValue -Config $Config -Key 'subscriptionId')
+    if ([string]::IsNullOrWhiteSpace($subscriptionId) -or $subscriptionId.Trim().StartsWith('<REPLACE')) {
+        throw "Set subscriptionId in the environment YAML to the Azure subscription GUID that owns this environment."
+    }
+
+    $subscriptionId = $subscriptionId.Trim()
+    [void](Get-EnterpriseSubscriptionNameSuffix -SubscriptionId $subscriptionId)
+
+    az account set --subscription $subscriptionId 2>$null
+    if ($LASTEXITCODE -ne 0) {
+        throw "Unable to set Azure CLI subscription context to configured subscriptionId '$subscriptionId'. Run 'az login' for the correct tenant or fix variables/$($Config.environmentSuffix).yaml."
+    }
+
+    return $subscriptionId
 }
 
 # ---------------------------------------------------------------------------
@@ -244,6 +291,10 @@ In CI, supply the full file content through the '$ContentEnvVarName' environment
         $config['vmPublicIpDnsNameLabel'] = ''
     }
 
+    if (-not $config.Contains('vmExistingOsDiskId')) {
+        $config['vmExistingOsDiskId'] = ''
+    }
+
     if (-not $config.Contains('rdpAllowedIpCidrs')) {
         $config['rdpAllowedIpCidrs'] = @()
     }
@@ -415,7 +466,9 @@ In CI, supply the full file content through the '$ContentEnvVarName' environment
 
     # ---- Validate all required keys are present in the merged config ----
     $requiredKeys = @(
+        'subscriptionId',
         'baseName',
+        'resourceGroupInstance',
         'location',
         'vnetAddressSpace',
         'servicesSubnetAddressPrefix',
@@ -448,6 +501,13 @@ In CI, supply the full file content through the '$ContentEnvVarName' environment
         'deployAiFoundry',
         'deployVm',
         'deployAutomation',
+        'deployPostgres',
+        'postgresSubnetAddressPrefix',
+        'postgresAdminUsername',
+        'postgresSkuName',
+        'postgresVersion',
+        'postgresStorageSizeGB',
+        'postgresBackupRetentionDays',
         'automationRuntimeVersion',
         'automationAzVersion',
         'vmStartScheduleEnabled',
@@ -475,6 +535,14 @@ In CI, supply the full file content through the '$ContentEnvVarName' environment
 
     if ($missingKeys.Count -gt 0) {
         throw "Missing required values after merging core.yaml + ${EnvironmentSuffix}.yaml: $($missingKeys -join ', ')"
+    }
+
+    if ([string]$config['subscriptionId'] -notmatch '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$') {
+        throw "Invalid subscriptionId '$($config['subscriptionId'])'. Use the Azure subscription GUID that owns this environment."
+    }
+
+    if ([string]$config['resourceGroupInstance'] -notmatch '^[a-z0-9-]{1,10}$') {
+        throw "Invalid resourceGroupInstance '$($config['resourceGroupInstance'])'. Use 1-10 lowercase letters, numbers, or hyphens."
     }
 
     # ---- Normalize admin and user actor arrays ----
@@ -651,7 +719,7 @@ In CI, supply the full file content through the '$ContentEnvVarName' environment
     $config['environmentSuffix'] = $EnvironmentSuffix
 
     # ---- Append computed resource names ----
-    $resourceNames = Get-EnterpriseResourceNames -BaseName $config['baseName'] -EnvironmentSuffix $EnvironmentSuffix -NameSuffix $NameSuffix
+    $resourceNames = Get-EnterpriseResourceNames -BaseName $config['baseName'] -EnvironmentSuffix $EnvironmentSuffix -ResourceGroupInstance $config['resourceGroupInstance'] -NameSuffix $NameSuffix
     foreach ($property in $resourceNames.PSObject.Properties) {
         $config[$property.Name] = $property.Value
     }

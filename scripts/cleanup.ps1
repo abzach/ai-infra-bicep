@@ -80,25 +80,27 @@ if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($subscriptionId)) {
     exit 1
 }
 
-$nameSuffix = ($subscriptionId.Trim() -replace '-', '').Substring(0, 4).ToLower()
+$configWithoutSuffix = Read-EnterpriseEnvironmentConfig -ScriptRoot $scriptRoot -EnvironmentSuffix $EnvironmentSuffix
+$subscriptionId = Set-EnterpriseAzureSubscriptionContext -Config $configWithoutSuffix
+$nameSuffix = Get-EnterpriseSubscriptionNameSuffix -SubscriptionId $subscriptionId
 $configWithSuffix = Read-EnterpriseEnvironmentConfig -ScriptRoot $scriptRoot -EnvironmentSuffix $EnvironmentSuffix -NameSuffix $nameSuffix
-$coreRg    = $configWithSuffix.coreResourceGroupName
-$networkRg = $configWithSuffix.networkResourceGroupName
-$legacyConfig = Read-EnterpriseEnvironmentConfig -ScriptRoot $scriptRoot -EnvironmentSuffix $EnvironmentSuffix
+$workloadRg    = $configWithSuffix.WorkloadResourceGroupName
+$foundationRg = $configWithSuffix.FoundationResourceGroupName
+$legacyConfig = $configWithoutSuffix
 $expectedWorkloadTag = if ([string]::IsNullOrWhiteSpace($configWithSuffix.tagWorkload)) { 'enterprise-ai-foundry' } else { $configWithSuffix.tagWorkload }
 
 $resourceGroups = [System.Collections.Generic.List[string]]::new()
-Add-UniqueResourceGroupName -Names $resourceGroups -Name $coreRg
-Add-UniqueResourceGroupName -Names $resourceGroups -Name $networkRg
-Add-UniqueResourceGroupName -Names $resourceGroups -Name $legacyConfig.coreResourceGroupName
-Add-UniqueResourceGroupName -Names $resourceGroups -Name $legacyConfig.networkResourceGroupName
+Add-UniqueResourceGroupName -Names $resourceGroups -Name $workloadRg
+Add-UniqueResourceGroupName -Names $resourceGroups -Name $foundationRg
+Add-UniqueResourceGroupName -Names $resourceGroups -Name $legacyConfig.WorkloadResourceGroupName
+Add-UniqueResourceGroupName -Names $resourceGroups -Name $legacyConfig.FoundationResourceGroupName
 
 Write-Task "Configuration loaded from variables/$EnvironmentSuffix.yaml"
 Write-Info "  Subscription suffix : $nameSuffix"
-Write-Info "  Current core RG     : $coreRg"
-Write-Info "  Current network RG  : $networkRg"
-Write-Info "  Legacy core RG      : $($legacyConfig.coreResourceGroupName)"
-Write-Info "  Legacy network RG   : $($legacyConfig.networkResourceGroupName)"
+Write-Info "  Current workload RG    : $workloadRg"
+Write-Info "  Current foundation RG  : $foundationRg"
+Write-Info "  Legacy workload RG     : $($legacyConfig.WorkloadResourceGroupName)"
+Write-Info "  Legacy foundation RG   : $($legacyConfig.FoundationResourceGroupName)"
 Write-Info "  Expected workload tag: $expectedWorkloadTag"
 Write-Info ''
 

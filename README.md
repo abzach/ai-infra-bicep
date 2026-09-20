@@ -3,8 +3,8 @@
 This repository deploys a private Azure AI Foundry environment for learning,
 prototyping, and development. It uses Bicep and PowerShell to create the
 network, Azure OpenAI models, AI Hub and Project workspaces, Key Vault,
-Storage, monitoring, managed identities, and an optional Windows jumpbox with
-a terminal chat app.
+Storage, a free-tier-sized PostgreSQL Flexible Server, monitoring, managed
+identities, and an optional Windows jumpbox with a terminal chat app.
 
 The deployment is secure by default:
 
@@ -12,6 +12,7 @@ The deployment is secure by default:
 - Private endpoints and private DNS provide service connectivity.
 - Entra ID and resource-scoped RBAC are used instead of service keys.
 - The jumpbox uses Trusted Launch and RDP is restricted to the deployer IP.
+- Image-based jumpboxes use Azure Disk Encryption; migrated attached OS disks retain their existing encryption state.
 - Automation permissions are limited to the individual VM and NSG used by its scheduled runbooks.
 - Local configuration and credentials are git-ignored.
 
@@ -51,12 +52,15 @@ Use `main.ps1` from the repository root for the common environment actions:
 
 ```mermaid
 flowchart LR
-   Deploy[dev/uat-deploy] --> Bicep[deploy.ps1 and Bicep]
+   Deploy[dev/uat-deploy] --> Context[Set subscription from environment YAML]
+   Context --> Bicep[deploy.ps1 and Bicep]
    Bicep --> Publish[Publish runbooks and link schedules]
    Deploy --> Rdp[Refresh temporary deployer RDP rule]
-   Connect[dev/uat-connect] --> Rdp
+   Connect[dev/uat-connect] --> Context
+   Context --> Rdp
    Connect --> Password[Read password through VM managed identity]
-   Clean[dev/uat-clean] --> Preserve[Delete resources; preserve Key Vault and OS disk]
+   Clean[dev/uat-clean] --> Context
+   Context --> Preserve[Delete resources; preserve Key Vault and OS disk]
 ```
 
 ## Deploy locally
@@ -69,8 +73,8 @@ flowchart LR
    Copy-Item variables\dev.yaml.example variables\dev.yaml
    ```
 
-3. Edit `variables\core.yaml` and `variables\dev.yaml`. At minimum, set a
-   short `baseName` and an Entra object ID in `admin`. Add one stable RDP
+3. Edit `variables\core.yaml` and `variables\dev.yaml`. At minimum, set
+   `subscriptionId`, a short `baseName`, and an Entra object ID in `admin`. Add one stable RDP
    source address to `rdpAllowedPublicIpAddress`, or several addresses/ranges
    to `rdpAllowedIpCidrs`; deployment also includes your detected public IP for
    the VM allow rule. Keep these files local; they are intentionally ignored by
@@ -92,6 +96,8 @@ example. A normal rerun exits without changes when the environment already
 matches the desired state. VM passwords are preserved when possible; use
 `-RotateVmPassword` only when an intentional rotation is required. Local
 credential output is written only under the ignored `.local\` folder.
+When `vmExistingOsDiskId` is configured for a migration, deployed-resource
+validation verifies that attached disk and its configured SKU instead of an image reference or a new Azure Disk Encryption extension.
 
 ## Use the environment
 

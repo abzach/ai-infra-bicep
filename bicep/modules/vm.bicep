@@ -42,6 +42,16 @@ param imageVersion string = 'latest'
 ])
 param osDiskStorageAccountType string = 'Standard_LRS'
 
+@description('Resource ID of an existing managed disk to attach as the OS disk instead of creating one from image. Leave empty for a normal FromImage deployment.')
+param existingOsDiskId string = ''
+
+@description('OS type of the existing disk. Required only when existingOsDiskId is set.')
+@allowed([
+  'Windows'
+  'Linux'
+])
+param osType string = 'Windows'
+
 @description('Key Vault URI used by Azure Disk Encryption.')
 param keyVaultUrl string
 
@@ -68,6 +78,8 @@ param tags object = {}
 
 var osDiskName = '${vmName}-osdisk'
 var computerName = length(vmName) > 15 ? substring(vmName, 0, 15) : vmName
+// Attach mode reuses a migrated disk and must omit osProfile/imageReference entirely.
+var useExistingOsDisk = !empty(existingOsDiskId)
 var azureMonitorAgentSettings = {
   authentication: {
     managedIdentity: {
@@ -93,71 +105,97 @@ var diskEncryptionSettings = {
   VolumeType: 'All'
 }
 
+// Shared property fragments merged per mode so Attach mode can omit osProfile/imageReference entirely (ARM rejects them together with createOption: Attach).
+var commonVmProperties = {
+  hardwareProfile: {
+    vmSize: vmSize
+  }
+  networkProfile: {
+    networkInterfaces: [
+      {
+        id: nicId
+        properties: {
+          primary: true
+        }
+      }
+    ]
+  }
+  securityProfile: {
+    securityType: 'TrustedLaunch'
+    uefiSettings: {
+      secureBootEnabled: true
+      vTpmEnabled: true
+    }
+  }
+  licenseType: 'Windows_Client'
+}
+
+var attachModeProperties = {
+  storageProfile: {
+    osDisk: {
+      createOption: 'Attach'
+      osType: osType
+      caching: 'ReadWrite'
+      managedDisk: {
+        id: existingOsDiskId
+      }
+    }
+  }
+}
+
+var fromImageModeProperties = {
+  osProfile: {
+    computerName: computerName
+    adminUsername: adminUsername
+    adminPassword: adminPassword
+    windowsConfiguration: {
+      enableAutomaticUpdates: true
+      patchSettings: {
+        patchMode: 'AutomaticByOS'
+      }
+    }
+  }
+  storageProfile: {
+    imageReference: {
+      publisher: imagePublisher
+      offer: imageOffer
+      sku: imageSku
+      version: imageVersion
+    }
+    osDisk: {
+      name: osDiskName
+      caching: 'ReadWrite'
+      createOption: 'FromImage'
+      managedDisk: {
+        storageAccountType: osDiskStorageAccountType
+      }
+    }
+  }
+}
+
+var spotOnlyProperties = {
+  priority: 'Spot'
+  evictionPolicy: 'Deallocate'
+  billingProfile: {
+    maxPrice: spotMaxPrice
+  }
+}
+
+var diskModeProperties = useExistingOsDisk ? attachModeProperties : fromImageModeProperties
+var vmSpotProperties = union(commonVmProperties, diskModeProperties, spotOnlyProperties)
+var vmRegularProperties = union(commonVmProperties, diskModeProperties)
+
 resource vmSpot 'Microsoft.Compute/virtualMachines@2024-03-01' = if (useSpotVm) {
   name: vmName
   location: location
   tags: tags
   identity: {
-    type: 'SystemAssigned, UserAssigned'
+    type: 'UserAssigned'
     userAssignedIdentities: {
       '${identityId}': {}
     }
   }
-  properties: {
-    priority: 'Spot'
-    evictionPolicy: 'Deallocate'
-    billingProfile: {
-      maxPrice: spotMaxPrice
-    }
-    hardwareProfile: {
-      vmSize: vmSize
-    }
-    osProfile: {
-      computerName: computerName
-      adminUsername: adminUsername
-      adminPassword: adminPassword
-      windowsConfiguration: {
-        enableAutomaticUpdates: true
-        patchSettings: {
-          patchMode: 'AutomaticByOS'
-        }
-      }
-    }
-    storageProfile: {
-      imageReference: {
-        publisher: imagePublisher
-        offer: imageOffer
-        sku: imageSku
-        version: imageVersion
-      }
-      osDisk: {
-        name: osDiskName
-        caching: 'ReadWrite'
-        createOption: 'FromImage'
-        managedDisk: {
-          storageAccountType: osDiskStorageAccountType
-        }
-      }
-    }
-    networkProfile: {
-      networkInterfaces: [
-        {
-          id: nicId
-          properties: {
-            primary: true
-          }
-        }
-      ]
-    }
-    securityProfile: {
-      securityType: 'TrustedLaunch'
-      uefiSettings: {
-        secureBootEnabled: true
-        vTpmEnabled: true
-      }
-    }
-    licenseType: 'Windows_Client'
-  }
+  properties: vmSpotProperties
 }
 
 resource vmRegular 'Microsoft.Compute/virtualMachines@2024-03-01' = if (!useSpotVm) {
@@ -165,61 +203,12 @@ resource vmRegular 'Microsoft.Compute/virtualMachines@2024-03-01' = if (!useSpot
   location: location
   tags: tags
   identity: {
-    type: 'SystemAssigned, UserAssigned'
+    type: 'UserAssigned'
     userAssignedIdentities: {
       '${identityId}': {}
     }
   }
-  properties: {
-    hardwareProfile: {
-      vmSize: vmSize
-    }
-    osProfile: {
-      computerName: computerName
-      adminUsername: adminUsername
-      adminPassword: adminPassword
-      windowsConfiguration: {
-        enableAutomaticUpdates: true
-        patchSettings: {
-          patchMode: 'AutomaticByOS'
-        }
-      }
-    }
-    storageProfile: {
-      imageReference: {
-        publisher: imagePublisher
-        offer: imageOffer
-        sku: imageSku
-        version: imageVersion
-      }
-      osDisk: {
-        name: osDiskName
-        caching: 'ReadWrite'
-        createOption: 'FromImage'
-        managedDisk: {
-          storageAccountType: osDiskStorageAccountType
-        }
-      }
-    }
-    networkProfile: {
-      networkInterfaces: [
-        {
-          id: nicId
-          properties: {
-            primary: true
-          }
-        }
-      ]
-    }
-    securityProfile: {
-      securityType: 'TrustedLaunch'
-      uefiSettings: {
-        secureBootEnabled: true
-        vTpmEnabled: true
-      }
-    }
-    licenseType: 'Windows_Client'
-  }
+  properties: vmRegularProperties
 }
 
 resource autoShutdownSchedule 'Microsoft.DevTestLab/schedules@2018-09-15' = if (autoShutdownEnabled) {
@@ -269,7 +258,7 @@ resource vmSpotAntimalware 'Microsoft.Compute/virtualMachines/extensions@2021-11
   }
 }
 
-resource vmSpotDiskEncryption 'Microsoft.Compute/virtualMachines/extensions@2021-11-01' = if (useSpotVm) {
+resource vmSpotDiskEncryption 'Microsoft.Compute/virtualMachines/extensions@2021-11-01' = if (useSpotVm && !useExistingOsDisk) {
   parent: vmSpot
   name: 'AzureDiskEncryption'
   location: location
@@ -310,7 +299,7 @@ resource vmRegularAntimalware 'Microsoft.Compute/virtualMachines/extensions@2021
   }
 }
 
-resource vmRegularDiskEncryption 'Microsoft.Compute/virtualMachines/extensions@2021-11-01' = if (!useSpotVm) {
+resource vmRegularDiskEncryption 'Microsoft.Compute/virtualMachines/extensions@2021-11-01' = if (!useSpotVm && !useExistingOsDisk) {
   parent: vmRegular
   name: 'AzureDiskEncryption'
   location: location
@@ -326,4 +315,3 @@ resource vmRegularDiskEncryption 'Microsoft.Compute/virtualMachines/extensions@2
 output vmId string = useSpotVm ? vmSpot!.id : vmRegular!.id
 output vmName string = useSpotVm ? vmSpot!.name : vmRegular!.name
 output vmSize string = vmSize
-output systemAssignedPrincipalId string = useSpotVm ? vmSpot!.identity.principalId : vmRegular!.identity.principalId

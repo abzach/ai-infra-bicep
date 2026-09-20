@@ -5,6 +5,10 @@
 # file in this repository.
 
 variables:
+  # Trailing instance number for the two resource group names (rg-{baseName}-workload-{env}-{instance},
+  # rg-{baseName}-foundation-{env}-{instance}). Increment for a parallel instance in the same environment.
+  resourceGroupInstance: '001'
+
   # ---- Component deployment flags -------------------------------------------------------
   # Shared defaults. Override per environment in dev.yaml / uat.yaml.
   # true  -> the component is deployed and kept current.
@@ -19,6 +23,7 @@ variables:
   deployAiFoundry: true # Deploys the AI Hub, AI Project, and hub private endpoint; allowed values: true, false.
   deployVm: true # Deploys the jumpbox VM with its NIC, public IP, NSG, OS disk, and auto-shutdown schedule; allowed values: true, false. Setting false also deletes the OS disk.
   deployAutomation: true # Deploys the Automation Account, its user-assigned identity, and repository runbooks; allowed values: true, false. Must be false when deployVm is false.
+  deployPostgres: true # Deploys the PostgreSQL Flexible Server, its delegated subnet, and its private DNS zone (Burstable B1ms, 32 GiB, HA disabled, VNet-integrated); allowed values: true, false.
 
   vnetAddressSpace: 10.0.0.0/16 # VNet IPv4 CIDR; must contain both subnet prefixes and must not overlap connected networks.
   servicesSubnetAddressPrefix: 10.0.1.0/24 # Subnet CIDR for private endpoints and service access; must be inside vnetAddressSpace.
@@ -41,6 +46,12 @@ variables:
   vmSpotMaxPrice: -1 # Maximum Spot price in USD/hour; -1 allows up to pay-as-you-go price, or use a nonnegative whole number.
   vmAutoShutdownTimeZone: 'UTC' # Windows time-zone ID used by the auto-shutdown schedule.
   vmGuestTimeZone: 'UTC' # Windows time-zone ID applied inside the jumpbox guest OS by setup.ps1; use any Windows time-zone ID.
+
+  postgresSubnetAddressPrefix: 10.0.3.0/24 # Delegated subnet CIDR for the PostgreSQL Flexible Server; must be inside vnetAddressSpace and not overlap the other subnets.
+  postgresAdminUsername: pgadmin # PostgreSQL Flexible Server administrator login name; 1-63 characters, cannot be a reserved PostgreSQL role name (for example azure_superuser, admin, postgres).
+  postgresVersion: '16' # PostgreSQL major version; allowed values: 11, 12, 13, 14, 15, 16.
+  postgresStorageSizeGB: 32 # PostgreSQL storage size in GiB; kept at 32 to stay within the Azure free-tier storage allowance.
+  postgresBackupRetentionDays: 7 # PostgreSQL backup retention window; allowed values: 7-35 days.
 
   automationRuntimeVersion: '7.4' # PowerShell runtime used by Automation runbooks; allowed value: 7.4.
   automationAzVersion: '12.3.0' # Az package version installed in the PowerShell runtime environment; use a version supported by Azure Automation.

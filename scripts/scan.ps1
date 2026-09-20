@@ -148,6 +148,16 @@ Test-Rule -Condition ($automationCredentials.Count -eq 0) -Message 'No Automatio
 $automationWebhooks = @(Get-ResourcesOfType -Resources $resources -Type 'Microsoft.Automation/automationAccounts/webhooks')
 Test-Rule -Condition ($automationWebhooks.Count -eq 0) -Message 'No Automation webhooks are defined.' -Failures $failures
 
+$postgresServers = @(Get-ResourcesOfType -Resources $resources -Type 'Microsoft.DBforPostgreSQL/flexibleServers')
+Test-Rule -Condition ($postgresServers.Count -eq 1) -Message 'A PostgreSQL Flexible Server is defined.' -Failures $failures
+foreach ($postgresServer in $postgresServers) {
+    Test-Rule -Condition ($postgresServer.sku.tier -eq 'Burstable') -Message 'PostgreSQL Flexible Server uses the Burstable compute tier.' -Failures $failures
+    Test-Rule -Condition ($postgresServer.properties.highAvailability.mode -eq 'Disabled') -Message 'PostgreSQL Flexible Server has high availability disabled.' -Failures $failures
+    Test-Rule -Condition ($postgresServer.properties.backup.geoRedundantBackup -eq 'Disabled') -Message 'PostgreSQL Flexible Server backup is not geo-redundant.' -Failures $failures
+    Test-Rule -Condition ($postgresServer.properties.storage.autoGrow -eq 'Disabled') -Message 'PostgreSQL Flexible Server storage auto-grow is disabled.' -Failures $failures
+    Test-Rule -Condition (-not [string]::IsNullOrWhiteSpace([string]$postgresServer.properties.network.delegatedSubnetResourceId)) -Message 'PostgreSQL Flexible Server is integrated into the VNet through a delegated subnet (no public endpoint).' -Failures $failures
+}
+
 $automationJobSchedules = @(Get-ResourcesOfType -Resources $resources -Type 'Microsoft.Automation/automationAccounts/jobSchedules')
 Test-Rule -Condition ($automationJobSchedules.Count -eq 0) -Message 'Automation job links are deferred until runbooks are published.' -Failures $failures
 

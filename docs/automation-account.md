@@ -10,7 +10,7 @@ This component is controlled by `deployAutomation` in your environment YAML. Whe
 
 ## Identity and RBAC
 
-The Automation Account uses the dedicated user-assigned identity `mi-<base>-automation-<env>-<suffix>`. The runbook selects that identity explicitly with `Connect-AzAccount -Identity -AccountId <client-id>`.
+The Automation Account uses the single shared user-assigned identity `mi-<base>-<env>` (also used by the AI Hub, AI Project, and jumpbox VM). The runbook selects that identity explicitly with `Connect-AzAccount -Identity -AccountId <client-id>`.
 
 The identity receives Virtual Machine Contributor at the individual jumpbox VM scope and Network Contributor at the individual jumpbox NSG scope. It receives no Key Vault, Storage, OpenAI, subscription, or role-assignment permissions.
 

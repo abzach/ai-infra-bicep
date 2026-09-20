@@ -20,7 +20,7 @@ instructions, and it rejects unreplaced placeholders.
 
 Keep environment files organized in this order so local files and committed examples stay easy to compare:
 
-1. `Resource prefix` - `environmentSuffix` and `baseName`.
+1. `Resource prefix` - `environmentSuffix`, `subscriptionId`, and `baseName`.
 2. `Deployment flags` - component `deploy*` switches.
 3. `Admins` - admin actor object IDs and the RBAC role-name reference assigned by the template.
 4. `Users` - user actor object IDs and the RBAC role-name reference assigned by the template.
@@ -48,9 +48,8 @@ The `admin` and `user` variables configure role assignments for human actors or 
 | `user` actors | Log Analytics | Log Analytics Reader, Monitoring Reader |
 | `user` actors | Core and network resource groups | Reader |
 | Deploying identity | Key Vault | Key Vault Secrets Officer |
-| AI Hub managed identity | Storage Account, Key Vault, Azure OpenAI | Storage Blob Data Contributor, Key Vault Secrets User, Cognitive Services OpenAI User |
-| VM managed identity | Key Vault, Azure OpenAI | Key Vault Secrets User, Cognitive Services OpenAI User |
-| Automation managed identity | Jumpbox VM; jumpbox NSG | Virtual Machine Contributor; Network Contributor |
+| Shared managed identity | Storage Account, Key Vault, Azure OpenAI | Storage Blob Data Contributor, Key Vault Secrets User, Cognitive Services OpenAI User |
+| Shared managed identity | Jumpbox VM; jumpbox NSG | Virtual Machine Contributor; Network Contributor |
 
 Both support arrays of objects (`- objectId: '...', principalType: 'User'|'Group'|'ServicePrincipal'`) or simple object ID strings. Leaving an array empty (`[]`) skips role assignments cleanly.
 
@@ -58,7 +57,7 @@ Configuration is merged in this order:
 
 1. `core.yaml` shared defaults
 2. `dev.yaml` or `uat.yaml` environment overrides
-3. Subscription-derived name suffix calculated by the scripts
+3. Subscription-derived name suffix calculated from the environment YAML `subscriptionId`
 
 ## Component deployment flags
 
@@ -71,12 +70,12 @@ current; `false` makes the next `scripts/deploy.ps1` run remove it if a previous
 | `deployLogAnalytics` | Log Analytics workspace and resource diagnostics | Diagnostic settings, then the workspace |
 | `deployAiFoundry` | AI Hub, AI Project, hub private endpoint | Project, hub, then the hub private endpoint |
 | `deployVm` | Jumpbox VM, NIC, public IP, NSG, OS disk, auto-shutdown schedule | Schedule, VM, **OS disk**, NIC, public IP, NSG |
-| `deployAutomation` | Automation Account, its identity, repository runbooks | Automation Account and its managed identity |
+| `deployAutomation` | Automation Account, repository runbooks | Automation Account (the shared identity is never removed) |
 
 Components without a flag are never removed because they hold deployment state or everything
 else depends on them: resource groups, the virtual network and subnets, private DNS zones and
 links, Key Vault and its private endpoint, Azure OpenAI and its private endpoint, and the
-hub/VM managed identities.
+shared managed identity.
 
 Dependency rules enforced by `scripts/config.ps1`:
 
@@ -91,9 +90,13 @@ Dependency rules enforced by `scripts/config.ps1`:
 
 All location, Storage tier, model deployment arrays, model/API versions, VM shutdown settings, tags, SKU/capacity, environment identity, service-connection selections, GitHub OIDC secret-name selections, and optional public IP DNS labels belong in the environment YAML. Shared networking, retention, image publisher/offer/version, Automation runtime/schedule, guest time zone, and operational defaults belong in `core.yaml`. Every variable must retain an inline purpose and allowed-values comment.
 
+`subscriptionId` is the Azure subscription GUID that owns the environment. Local scripts load it before deriving resource names, set the Azure CLI context to that subscription, and then calculate the four-character name suffix from it. This prevents `*-deploy`, `*-connect`, `*-clean`, and deployed-environment tests from accidentally targeting whichever subscription was active before the command started.
+
 `vmPublicIpDnsNameLabel` configures the optional DNS label on the jumpbox VM public IP. Leave it empty (`''`) to deploy only the static public IP address, or set a region-unique label such as `az-swe-aifp` to produce an Azure DNS name like `az-swe-aifp.swedencentral.cloudapp.azure.com` when `location` is `swedencentral`.
 
 `modelDeployments` is an ordered array of objects with `deploymentName`, `modelName`, `modelVersion`, `skuName`, and positive `capacityK`. At least two entries are required because the chat app consumes the first two as primary and secondary models; any number of additional deployments is supported.
+
+`deployPostgres` deploys an Azure Database for PostgreSQL Flexible Server sized to the Azure free-tier allowance: `postgresSkuName` (`Standard_B1ms`, Burstable tier) in the environment YAML, and `postgresSubnetAddressPrefix`, `postgresAdminUsername`, `postgresVersion`, `postgresStorageSizeGB`, and `postgresBackupRetentionDays` as shared defaults in `core.yaml`. The administrator password is generated and stored in Key Vault by `deploy.ps1`; see [PostgreSQL](../docs/postgresql.md).
 
 `rdpAllowedPublicIpAddress` and `rdpAllowedIpCidrs` populate `allow-rdp-user`. The detected deploying or connecting machine populates `allow-rdp-deployer`, which the weekly Automation runbook deletes without changing the user rule. Use `main.ps1 dev-connect -WhatIf` or `main.ps1 uat-connect -WhatIf` before applying a live update.
 
