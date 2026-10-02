@@ -9,7 +9,9 @@ The network module provisions a secured Virtual Network (VNet) with isolated sub
 ### Key Components:
 - **Virtual Network:** `vnet-<baseName>-<environmentSuffix>`
 - **Subnets:**
-  - `services` (`10.0.1.0/24`): Hosts Private Endpoints for Key Vault, Storage Blob, Azure OpenAI, and AI Hub.
+  - `services` (`10.0.1.0/24`): Hosts private endpoints for Key Vault, Storage Blob, Azure OpenAI, Foundry, Azure AI Search, and Cosmos DB.
+  - `agent` (`agentSubnetAddressPrefix`, `/24` recommended): Dedicated to Microsoft Foundry Agent Service and delegated exclusively to `Microsoft.App/environments`.
+  - `agent-recovery` (optional `agentRecoverySubnetAddressPrefix`): Replacement delegated subnet when `agent` retains a service association link after a failed Foundry deployment. The original subnet stays intact; the account uses the replacement subnet.
   - `vm` (`10.0.2.0/24`): Hosts the Jumpbox VM Network Interface.
 - **Network Security Group (NSG):** `vm-<baseName>-<environmentSuffix>-nsg`
 - **Public IP:** `vm-<baseName>-<environmentSuffix>-pip` (Standard SKU, Static allocation, optional DNS label)

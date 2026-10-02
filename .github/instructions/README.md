@@ -4,13 +4,13 @@ Path-specific instruction files in this folder capture recurring GitHub Copilot 
 
 | Instruction file | Applies to | Purpose |
 |---|---|---|
-| `bicep-service-change.instructions.md` | Bicep and variable files | Add or modify Azure services without breaking naming, service tag limits, private networking, or security invariants |
+| `bicep-service-change.instructions.md` | Bicep and variable files | Add or modify Azure services without breaking naming, Agent subnet delegation, private networking, or security invariants |
 | `bicep-mcp-server.instructions.md` | Bicep files and MCP config | Use the official Bicep MCP server tools for schema lookups, best practices, diagnostics, formatting, and ARM decompilation |
-| `azure-mcp-server.instructions.md` | Bicep, scripts, variables, and MCP config | Use the Azure MCP server against the live subscription to diagnose failures, confirm model-array SKUs/quotas/regions, and verify deployment flags, alongside the Bicep MCP server |
+| `azure-mcp-server.instructions.md` | Bicep, scripts, variables, and MCP config | Use the Azure MCP server with explicit tenant context when needed to diagnose failures, confirm model-array SKUs/quotas/regions, and verify deployment flags alongside the Bicep MCP server |
 | `azure-rbac-preflight.instructions.md` | Deployment scripts and workflows | Keep the role-assignment write preflight self-remediating: detect, self-grant User Access Administrator, elevate when allowed, re-verify, then fail loudly |
 | `local-configuration.instructions.md` | Variables, scripts, docs, and pipelines | Keep every user-specific value inside untracked `variables/*.yaml`, commit only `*.yaml.example` templates, and keep other files value-free |
-| `deployment-orchestration.instructions.md` | Deployment and config scripts | Preserve idempotent deploy behavior, non-interactive Bicep updates, ordered runbook publication, ARM secret sync, VM bootstrap, and explicit error handling |
-| `security-review.instructions.md` | Infrastructure, scripts, app, and pipelines | Review high-risk security posture, secret handling, and compiled ARM resource traversal |
+| `deployment-orchestration.instructions.md` | Deployment and config scripts | Preserve idempotent deploy behavior, Foundry Agent subnet and disconnected endpoint recovery, ordered runbook publication, ARM secret sync, guest-verified VM bootstrap, and explicit error handling |
+| `security-review.instructions.md` | Infrastructure, scripts, app, and pipelines | Review high-risk security posture, including private Foundry/Search access, secret handling, and compiled ARM resource traversal |
 | `app-bootstrap.instructions.md` | Python app and VM bootstrap files | Keep managed identity auth, Key Vault config flow, and app hash behavior intact |
 | `pipeline-workflow.instructions.md` | GitHub Actions, Azure DevOps, and variables | Keep CI/CD stages aligned and secret-safe |
 | `validation-troubleshooting.instructions.md` | Test, scan, deploy, cleanup, and docs | Select the right static/live validation and troubleshooting path |

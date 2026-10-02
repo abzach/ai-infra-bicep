@@ -47,6 +47,18 @@ param deployPostgres bool = false
 @description('Address prefix for the PostgreSQL Flexible Server delegated subnet.')
 param postgresSubnetAddressPrefix string = '10.0.3.0/24'
 
+@description('Deploy the Cosmos DB private DNS zone. Set to false when Cosmos DB is not deployed.')
+param deployCosmosDb bool = false
+
+@description('Deploy Microsoft Foundry Agent Service network resources.')
+param deployAiFoundry bool = false
+
+@description('Address prefix for the dedicated Microsoft Foundry Agent Service subnet.')
+param agentSubnetAddressPrefix string = '10.0.4.0/24'
+
+@description('Optional address prefix for a replacement Foundry Agent Service subnet when the original subnet retains a service association link.')
+param agentRecoverySubnetAddressPrefix string = ''
+
 var baseSubnets = [
   {
     name: 'services'
@@ -63,7 +75,19 @@ var postgresSubnetDefinition = {
   addressPrefix: postgresSubnetAddressPrefix
 }
 
-var subnets = deployPostgres ? concat(baseSubnets, [postgresSubnetDefinition]) : baseSubnets
+var agentSubnetDefinition = {
+  name: 'agent'
+  addressPrefix: agentSubnetAddressPrefix
+}
+
+var agentRecoverySubnetDefinition = {
+  name: 'agent-recovery'
+  addressPrefix: agentRecoverySubnetAddressPrefix
+}
+
+var subnetsWithPostgres = deployPostgres ? concat(baseSubnets, [postgresSubnetDefinition]) : baseSubnets
+var subnetsWithAgent = deployAiFoundry ? concat(subnetsWithPostgres, [agentSubnetDefinition]) : subnetsWithPostgres
+var subnets = deployAiFoundry && !empty(agentRecoverySubnetAddressPrefix) ? concat(subnetsWithAgent, [agentRecoverySubnetDefinition]) : subnetsWithAgent
 
 resource vnet 'Microsoft.Network/virtualNetworks@2024-01-01' = {
   name: vnetName
@@ -88,8 +112,15 @@ resource vnet 'Microsoft.Network/virtualNetworks@2024-01-01' = {
               serviceName: 'Microsoft.DBforPostgreSQL/flexibleServers'
             }
           }
+        ] : subnet.name == 'agent' || subnet.name == 'agent-recovery' ? [
+          {
+            name: 'foundryAgentServiceDelegation'
+            properties: {
+              serviceName: 'Microsoft.App/environments'
+            }
+          }
         ] : []
-        serviceEndpoints: subnet.name == 'postgres' ? [] : [
+        serviceEndpoints: subnet.name == 'postgres' || subnet.name == 'agent' || subnet.name == 'agent-recovery' ? [] : [
           {
             service: 'Microsoft.CognitiveServices'
           }
@@ -127,6 +158,26 @@ resource amlApiDnsZone 'Microsoft.Network/privateDnsZones@2020-06-01' = {
 
 resource postgresDnsZone 'Microsoft.Network/privateDnsZones@2020-06-01' = if (deployPostgres) {
   name: 'privatelink.postgres.database.azure.com'
+  location: 'global'
+}
+
+resource cosmosDbDnsZone 'Microsoft.Network/privateDnsZones@2020-06-01' = if (deployCosmosDb) {
+  name: 'privatelink.documents.azure.com'
+  location: 'global'
+}
+
+resource aiServicesDnsZone 'Microsoft.Network/privateDnsZones@2020-06-01' = if (deployAiFoundry) {
+  name: 'privatelink.services.ai.azure.com'
+  location: 'global'
+}
+
+resource cognitiveServicesDnsZone 'Microsoft.Network/privateDnsZones@2020-06-01' = if (deployAiFoundry) {
+  name: 'privatelink.cognitiveservices.azure.com'
+  location: 'global'
+}
+
+resource aiSearchDnsZone 'Microsoft.Network/privateDnsZones@2020-06-01' = if (deployAiFoundry) {
+  name: 'privatelink.search.windows.net'
   location: 'global'
 }
 
@@ -180,6 +231,54 @@ resource amlApiDnsVnetLink 'Microsoft.Network/privateDnsZones/virtualNetworkLink
 
 resource postgresDnsVnetLink 'Microsoft.Network/privateDnsZones/virtualNetworkLinks@2020-06-01' = if (deployPostgres) {
   parent: postgresDnsZone
+  name: 'vnet-link'
+  location: 'global'
+  properties: {
+    registrationEnabled: false
+    virtualNetwork: {
+      id: vnet.id
+    }
+  }
+}
+
+resource cosmosDbDnsVnetLink 'Microsoft.Network/privateDnsZones/virtualNetworkLinks@2020-06-01' = if (deployCosmosDb) {
+  parent: cosmosDbDnsZone
+  name: 'vnet-link'
+  location: 'global'
+  properties: {
+    registrationEnabled: false
+    virtualNetwork: {
+      id: vnet.id
+    }
+  }
+}
+
+resource aiServicesDnsVnetLink 'Microsoft.Network/privateDnsZones/virtualNetworkLinks@2020-06-01' = if (deployAiFoundry) {
+  parent: aiServicesDnsZone
+  name: 'vnet-link'
+  location: 'global'
+  properties: {
+    registrationEnabled: false
+    virtualNetwork: {
+      id: vnet.id
+    }
+  }
+}
+
+resource cognitiveServicesDnsVnetLink 'Microsoft.Network/privateDnsZones/virtualNetworkLinks@2020-06-01' = if (deployAiFoundry) {
+  parent: cognitiveServicesDnsZone
+  name: 'vnet-link'
+  location: 'global'
+  properties: {
+    registrationEnabled: false
+    virtualNetwork: {
+      id: vnet.id
+    }
+  }
+}
+
+resource aiSearchDnsVnetLink 'Microsoft.Network/privateDnsZones/virtualNetworkLinks@2020-06-01' = if (deployAiFoundry) {
+  parent: aiSearchDnsZone
   name: 'vnet-link'
   location: 'global'
   properties: {
@@ -306,6 +405,11 @@ output storageDnsZoneId string = storageDnsZone.id
 output amlApiDnsZoneId string = amlApiDnsZone.id
 output postgresSubnetId string = deployPostgres ? vnet.properties.subnets[2].id : ''
 output postgresDnsZoneId string = deployPostgres ? postgresDnsZone!.id : ''
+output cosmosDbDnsZoneId string = deployCosmosDb ? cosmosDbDnsZone!.id : ''
+output agentSubnetId string = deployAiFoundry ? vnet.properties.subnets[(deployPostgres ? 3 : 2) + (empty(agentRecoverySubnetAddressPrefix) ? 0 : 1)].id : ''
+output aiServicesDnsZoneId string = deployAiFoundry ? aiServicesDnsZone!.id : ''
+output cognitiveServicesDnsZoneId string = deployAiFoundry ? cognitiveServicesDnsZone!.id : ''
+output aiSearchDnsZoneId string = deployAiFoundry ? aiSearchDnsZone!.id : ''
 output nicId string = deployVmNetworking ? nic!.id : ''
 output nicName string = deployVmNetworking ? nic!.name : ''
 output privateIp string = deployVmNetworking ? nic!.properties.ipConfigurations[0].properties.privateIPAddress : ''

@@ -133,6 +133,21 @@ param deployLogAnalytics bool = true
 @description('Deploy the Azure Database for PostgreSQL Flexible Server, its delegated subnet, and its private DNS zone. Sized to the Azure free-tier allowance (Burstable B1ms, 32 GiB, HA disabled). Set to false to remove them.')
 param deployPostgres bool = true
 
+@description('Deploy Azure Static Web Apps on the Free hosting plan. Set to false to remove it.')
+param deployStaticWebApp bool = true
+
+@description('Azure region for Static Web Apps. Static Web Apps supports a subset of Azure regions.')
+param staticWebAppLocation string = 'eastus2'
+
+@description('Deploy Azure Cosmos DB for NoSQL with free tier enabled, provisioned throughput, and private endpoint. Set to false to remove it.')
+param deployCosmosDb bool = true
+
+@description('Deploy Azure API Management on the Consumption tier. Set to false to remove it.')
+param deployApiManagement bool = true
+
+@description('Deploy Azure App Service (Linux) on the F1 Free plan. Set to false to remove it.')
+param deployAppService bool = true
+
 @description('Address prefix for the PostgreSQL Flexible Server delegated subnet.')
 param postgresSubnetAddressPrefix string = '10.0.3.0/24'
 
@@ -156,6 +171,47 @@ param postgresAdminUsername string = 'pgadmin'
 @secure()
 @description('PostgreSQL Flexible Server administrator login password.')
 param postgresAdminPassword string = ''
+
+@description('Static Web Apps SKU. Free keeps this component at the $0 plan target.')
+@allowed([
+  'Free'
+])
+param staticWebAppSkuName string = 'Free'
+
+@description('Cosmos DB SQL database name.')
+param cosmosDbDatabaseName string = 'appstate'
+
+@description('Cosmos DB SQL container name.')
+param cosmosDbContainerName string = 'metadata'
+
+@description('Cosmos DB container partition key path.')
+param cosmosDbPartitionKeyPath string = '/pk'
+
+@description('Cosmos DB manual provisioned database throughput in RU/s. Keep at or below 1000 to stay within the free-tier throughput allowance.')
+@minValue(400)
+@maxValue(1000)
+param cosmosDbThroughput int = 400
+
+@description('Enable the Cosmos DB free-tier entitlement. Set to false for subscriptions that do not support Cosmos DB free tier, such as Internal subscriptions.')
+param cosmosDbFreeTierEnabled bool = true
+
+@description('API Management SKU. Consumption keeps this component on the serverless free-call allowance target.')
+@allowed([
+  'Consumption'
+])
+param apiManagementSkuName string = 'Consumption'
+
+@description('API Management publisher contact email.')
+param apiManagementPublisherEmail string = 'admin@example.com'
+
+@description('API Management publisher display name.')
+param apiManagementPublisherName string = 'AI Infra'
+
+@description('App Service Plan SKU. F1 keeps this component at the $0 free-tier target.')
+@allowed([
+  'F1'
+])
+param appServiceSkuName string = 'F1'
 
 @description('Deploy the AI Foundry hub, project, and hub private endpoint. Set to false to remove them.')
 param deployAiFoundry bool = true
@@ -193,7 +249,7 @@ param rdpDeployerCleanupScheduleStartTime string = ''
 @description('Time zone for the temporary RDP deployer rule cleanup schedule.')
 param rdpDeployerCleanupScheduleTimeZone string = 'Etc/UTC'
 
-@description('Enable private endpoints for AI Hub and AI Project workspaces.')
+@description('Enable the private endpoint for the Microsoft Foundry account.')
 param privateAiWorkspacesOnly bool = true
 
 @description('VNet address space CIDR.')
@@ -204,6 +260,18 @@ param servicesSubnetAddressPrefix string = '10.0.1.0/24'
 
 @description('VM subnet address prefix CIDR.')
 param vmSubnetAddressPrefix string = '10.0.2.0/24'
+
+@description('Dedicated Microsoft Foundry Agent Service subnet address prefix CIDR.')
+param agentSubnetAddressPrefix string = '10.0.4.0/24'
+
+@description('Optional replacement Agent Service subnet address prefix CIDR when the original subnet is still linked.')
+param agentRecoverySubnetAddressPrefix string = ''
+
+@description('Azure AI Search SKU used by Microsoft Foundry Agent Service.')
+@allowed([
+  'standard'
+])
+param aiSearchSkuName string = 'standard'
 
 @description('Enable accelerated networking on the VM NIC.')
 param vmAcceleratedNetworking bool = true
@@ -267,8 +335,9 @@ var foundationResourceGroupName  = 'rg-${baseName}-foundation-${environmentSuffi
 var storageAccountName       = 'st${baseName}${environmentSuffix}${nameSuffix}${replace(resourceGroupInstance, '-', '')}'
 var keyVaultName             = 'kv-${baseName}-${environmentSuffix}-${nameSuffix}-${resourceGroupInstance}'
 var openAiAccountName        = 'oai-${baseName}-${environmentSuffix}-${nameSuffix}-${resourceGroupInstance}'
-var hubName                  = 'hub-${baseName}-${environmentSuffix}-${resourceGroupInstance}'
+var foundryAccountName       = 'ai-${baseName}-${environmentSuffix}-${nameSuffix}-${resourceGroupInstance}'
 var projectName              = 'proj-${baseName}-${environmentSuffix}-${resourceGroupInstance}'
+var aiSearchName             = 'srch-${baseName}-${environmentSuffix}-${nameSuffix}-${resourceGroupInstance}'
 var sharedManagedIdentityName = 'mi-${baseName}-${environmentSuffix}-${resourceGroupInstance}'
 var automationAccountName    = 'aa-${baseName}-${environmentSuffix}-${resourceGroupInstance}'
 var vmStartScheduleName      = 'schedule-vm-start-daily'
@@ -277,6 +346,11 @@ var vnetName                 = 'vnet-${baseName}-${environmentSuffix}-${resource
 var vmName                   = 'vm-${baseName}-${environmentSuffix}-${resourceGroupInstance}'
 var lawWorkspaceName         = 'law-${baseName}-${environmentSuffix}-${resourceGroupInstance}'
 var postgresServerName       = 'psql-${baseName}-${environmentSuffix}-${nameSuffix}-${resourceGroupInstance}'
+var staticWebAppName         = 'stapp-${baseName}-${environmentSuffix}-${nameSuffix}-${resourceGroupInstance}'
+var cosmosDbAccountName      = 'cosmos-${baseName}-${environmentSuffix}-${nameSuffix}-${resourceGroupInstance}'
+var apiManagementServiceName = 'apim-${baseName}-${environmentSuffix}-${nameSuffix}-${resourceGroupInstance}'
+var appServicePlanName        = 'asp-${baseName}-${environmentSuffix}-${resourceGroupInstance}'
+var appServiceName           = 'web-${baseName}-${environmentSuffix}-${nameSuffix}-${resourceGroupInstance}'
 resource workloadRg 'Microsoft.Resources/resourceGroups@2024-07-01' = {
   name: workloadResourceGroupName
   location: location
@@ -307,6 +381,10 @@ module networkModule '../modules/network.bicep' = {
     automationPrincipalId: deployAutomation ? sharedManagedIdentityModule.outputs.principalId : ''
     deployPostgres: deployPostgres
     postgresSubnetAddressPrefix: postgresSubnetAddressPrefix
+    deployCosmosDb: deployCosmosDb
+    deployAiFoundry: deployAiFoundry
+    agentSubnetAddressPrefix: agentSubnetAddressPrefix
+    agentRecoverySubnetAddressPrefix: agentRecoverySubnetAddressPrefix
   }
 }
 
@@ -387,6 +465,69 @@ module postgresModule '../modules/postgresflexibleserver.bicep' = if (deployPost
   }
 }
 
+module staticWebAppModule '../modules/staticwebapp.bicep' = if (deployStaticWebApp) {
+  name: 'staticWebAppDeployment'
+  scope: workloadRg
+  params: {
+    staticWebAppName: staticWebAppName
+    location: staticWebAppLocation
+    skuName: staticWebAppSkuName
+    tags: effectiveTags
+  }
+}
+
+module cosmosDbModule '../modules/cosmosdb.bicep' = if (deployCosmosDb) {
+  name: 'cosmosDbDeployment'
+  scope: workloadRg
+  params: {
+    accountName: cosmosDbAccountName
+    location: location
+    databaseName: cosmosDbDatabaseName
+    containerName: cosmosDbContainerName
+    partitionKeyPath: cosmosDbPartitionKeyPath
+    throughput: cosmosDbThroughput
+    freeTierEnabled: cosmosDbFreeTierEnabled
+    sharedIdentityPrincipalId: sharedManagedIdentityModule.outputs.principalId
+    tags: effectiveTags
+  }
+}
+
+module aiSearchModule '../modules/aisearch.bicep' = if (deployAiFoundry) {
+  name: 'aiSearchDeployment'
+  scope: workloadRg
+  params: {
+    searchServiceName: aiSearchName
+    location: location
+    skuName: aiSearchSkuName
+    tags: effectiveTags
+  }
+}
+
+module apiManagementModule '../modules/apimanagement.bicep' = if (deployApiManagement) {
+  name: 'apiManagementDeployment'
+  scope: foundationRg
+  params: {
+    serviceName: apiManagementServiceName
+    location: location
+    skuName: apiManagementSkuName
+    publisherEmail: apiManagementPublisherEmail
+    publisherName: apiManagementPublisherName
+    tags: effectiveTags
+  }
+}
+
+module appServiceModule '../modules/appservice.bicep' = if (deployAppService) {
+  name: 'appServiceDeployment'
+  scope: foundationRg
+  params: {
+    appServicePlanName: appServicePlanName
+    appServiceName: appServiceName
+    location: location
+    skuName: appServiceSkuName
+    tags: effectiveTags
+  }
+}
+
 module openAiModule '../modules/openai.bicep' = {
   name: 'openAiDeployment'
   scope: workloadRg
@@ -459,55 +600,107 @@ module openAiPrivateEndpointModule '../modules/privateendpoint.bicep' = {
   }
 }
 
-module aiHubModule '../modules/aihub.bicep' = if (deployAiFoundry) {
-  name: 'aiHubDeployment'
-  scope: workloadRg
+module cosmosDbPrivateEndpointModule '../modules/privateendpoint.bicep' = if (deployCosmosDb) {
+  name: 'cosmosDbPrivateEndpointDeployment'
+  scope: foundationRg
   params: {
-    hubName: hubName
+    privateEndpointName: '${cosmosDbAccountName}-sql-pe'
     location: location
+    subnetId: networkModule.outputs.servicesSubnetId
+    privateLinkServiceId: cosmosDbModule!.outputs.id
+    groupId: 'Sql'
+    dnsZoneId: networkModule.outputs.cosmosDbDnsZoneId
+    tags: effectiveTags
+  }
+}
+
+module foundryModule '../modules/foundry.bicep' = if (deployAiFoundry) {
+  name: 'foundryDeployment'
+  scope: foundationRg
+  params: {
+    accountName: foundryAccountName
+    projectName: projectName
+    location: location
+    agentSubnetId: networkModule.outputs.agentSubnetId
     storageAccountResourceId: deployStorage ? storageModule!.outputs.id : ''
-    keyVaultResourceId: keyVaultModule.outputs.id
-    openAiEndpoint: openAiModule.outputs.endpoint
-    openAiResourceId: openAiModule.outputs.id
-    identityId: sharedManagedIdentityModule.outputs.id
+    storageBlobEndpoint: deployStorage ? storageModule!.outputs.blobEndpoint : ''
+    cosmosDbAccountResourceId: deployCosmosDb ? cosmosDbModule!.outputs.id : ''
+    cosmosDbEndpoint: deployCosmosDb ? cosmosDbModule!.outputs.endpoint : ''
+    aiSearchResourceId: aiSearchModule!.outputs.id
+    aiSearchEndpoint: aiSearchModule!.outputs.endpoint
+    modelDeployments: modelDeployments
     logAnalyticsWorkspaceResourceId: logAnalyticsWorkspaceResourceId
     tags: effectiveTags
   }
-}
-
-module aiProjectModule '../modules/aiproject.bicep' = if (deployAiFoundry) {
-  name: 'aiProjectDeployment'
-  scope: workloadRg
-  params: {
-    projectName: projectName
-    location: location
-    hubResourceId: aiHubModule!.outputs.id
-    identityId: sharedManagedIdentityModule.outputs.id
-    tags: effectiveTags
-  }
   dependsOn: [
-    managedIdentityRolesModule
-    aiHubModule
+    storagePrivateEndpointModule
+    cosmosDbPrivateEndpointModule
   ]
 }
 
-module aiHubPrivateEndpointModule '../modules/privateendpoint.bicep' = if (deployAiFoundry && privateAiWorkspacesOnly) {
-  name: 'aiHubPrivateEndpointDeployment'
+module foundryPrivateEndpointModule '../modules/privateendpoint.bicep' = if (deployAiFoundry && privateAiWorkspacesOnly) {
+  name: 'foundryPrivateEndpointDeployment'
   scope: foundationRg
   params: {
-    privateEndpointName: '${hubName}-pe'
+    privateEndpointName: '${foundryAccountName}-account-pe'
     location: location
     subnetId: networkModule.outputs.servicesSubnetId
-    privateLinkServiceId: aiHubModule!.outputs.id
-    groupId: 'amlworkspace'
-    dnsZoneId: networkModule.outputs.amlApiDnsZoneId
+    privateLinkServiceId: foundryModule!.outputs.accountId
+    groupId: 'account'
+    dnsZoneIds: [
+      networkModule.outputs.aiServicesDnsZoneId
+      networkModule.outputs.cognitiveServicesDnsZoneId
+      networkModule.outputs.oaiDnsZoneId
+    ]
     tags: effectiveTags
   }
+}
+
+module aiSearchPrivateEndpointModule '../modules/privateendpoint.bicep' = if (deployAiFoundry) {
+  name: 'aiSearchPrivateEndpointDeployment'
+  scope: foundationRg
+  params: {
+    privateEndpointName: '${aiSearchName}-search-pe'
+    location: location
+    subnetId: networkModule.outputs.servicesSubnetId
+    privateLinkServiceId: aiSearchModule!.outputs.id
+    groupId: 'searchService'
+    dnsZoneId: networkModule.outputs.aiSearchDnsZoneId
+    tags: effectiveTags
+  }
+}
+
+module foundryRolesModule '../modules/foundryroles.bicep' = if (deployAiFoundry) {
+  name: 'foundryRolesDeployment'
+  scope: workloadRg
+  params: {
+    storageAccountName: storageAccountName
+    cosmosDbAccountName: cosmosDbAccountName
+    aiSearchName: aiSearchName
+    projectPrincipalId: foundryModule!.outputs.projectPrincipalId
+  }
+}
+
+module foundryCapabilityHostModule '../modules/foundrycapabilityhost.bicep' = if (deployAiFoundry) {
+  name: 'foundryCapabilityHostDeployment'
+  scope: foundationRg
+  params: {
+    accountName: foundryAccountName
+    projectName: projectName
+    storageConnectionName: foundryModule!.outputs.storageConnectionName
+    cosmosDbConnectionName: foundryModule!.outputs.cosmosDbConnectionName
+    aiSearchConnectionName: foundryModule!.outputs.aiSearchConnectionName
+  }
+  dependsOn: [
+    foundryRolesModule
+    foundryPrivateEndpointModule
+    aiSearchPrivateEndpointModule
+  ]
 }
 
 module vmModule '../modules/vm.bicep' = if (deployVm) {
   name: 'vmDeployment'
-  scope: workloadRg
+  scope: foundationRg
   params: {
     vmName: vmName
     location: location
@@ -535,7 +728,7 @@ module vmModule '../modules/vm.bicep' = if (deployVm) {
 
 module automationModule '../modules/automation.bicep' = if (deployAutomation) {
   name: 'automationDeployment'
-  scope: workloadRg
+  scope: foundationRg
   params: {
     automationAccountName: automationAccountName
     location: location
@@ -566,18 +759,14 @@ module actorRolesModule '../modules/actorroles.bicep' = if (!empty(effectiveAdmi
     keyVaultName: keyVaultName
     openAiAccountName: openAiAccountName
     storageAccountName: deployStorage ? storageAccountName : ''
-    hubName: deployAiFoundry ? hubName : ''
-    projectName: deployAiFoundry ? projectName : ''
-    vmName: deployVm ? vmName : ''
+    hubName: ''
+    projectName: ''
     logAnalyticsWorkspaceName: deployLogAnalytics ? lawWorkspaceName : ''
   }
   dependsOn: [
     keyVaultModule
     openAiModule
     storageModule
-    aiHubModule
-    aiProjectModule
-    vmModule
     lawModule
   ]
 }
@@ -588,9 +777,14 @@ module networkRolesModule '../modules/networkroles.bicep' = if (!empty(effective
   params: {
     adminActors: effectiveAdminActors
     userActors: userActors
+    foundryAccountName: deployAiFoundry ? foundryAccountName : ''
+    foundryProjectName: deployAiFoundry ? projectName : ''
+    vmName: deployVm ? vmName : ''
   }
   dependsOn: [
     networkModule
+    foundryModule
+    vmModule
   ]
 }
 
@@ -598,8 +792,11 @@ output keyVaultUri string = keyVaultModule.outputs.vaultUri
 output openAiEndpoint string = openAiModule.outputs.endpoint
 output deploymentName string = openAiModule.outputs.deploymentName
 output secondaryDeploymentName string = openAiModule.outputs.secondaryDeploymentName
-output hubName string = deployAiFoundry ? aiHubModule!.outputs.name : ''
-output projectName string = deployAiFoundry ? aiProjectModule!.outputs.name : ''
+output foundryAccountName string = deployAiFoundry ? foundryModule!.outputs.accountName : ''
+output foundryAccountEndpoint string = deployAiFoundry ? foundryModule!.outputs.accountEndpoint : ''
+output projectName string = deployAiFoundry ? foundryModule!.outputs.projectName : ''
+output foundryCapabilityHostName string = deployAiFoundry ? foundryCapabilityHostModule!.outputs.name : ''
+output aiSearchName string = deployAiFoundry ? aiSearchModule!.outputs.name : ''
 output sharedManagedIdentityId string = sharedManagedIdentityModule.outputs.id
 output sharedManagedIdentityPrincipalId string = sharedManagedIdentityModule.outputs.principalId
 output sharedManagedIdentityClientId string = sharedManagedIdentityModule.outputs.clientId
@@ -618,3 +815,9 @@ output logAnalyticsWorkspaceId string = logAnalyticsWorkspaceResourceId
 output logAnalyticsWorkspaceName string = deployLogAnalytics ? lawModule!.outputs.name : ''
 output postgresServerName string = deployPostgres ? postgresModule!.outputs.name : ''
 output postgresServerFqdn string = deployPostgres ? postgresModule!.outputs.fqdn : ''
+output staticWebAppName string = deployStaticWebApp ? staticWebAppModule!.outputs.name : ''
+output cosmosDbAccountName string = deployCosmosDb ? cosmosDbModule!.outputs.name : ''
+output cosmosDbDatabaseName string = deployCosmosDb ? cosmosDbModule!.outputs.databaseName : ''
+output cosmosDbContainerName string = deployCosmosDb ? cosmosDbModule!.outputs.containerName : ''
+output apiManagementServiceName string = deployApiManagement ? apiManagementModule!.outputs.name : ''
+output appServiceName string = deployAppService ? appServiceModule!.outputs.name : ''

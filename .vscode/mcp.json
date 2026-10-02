@@ -1,25 +1,37 @@
 {
-  "servers": {
-    "bicep": {
-      "type": "stdio",
-      "command": "dnx",
-      "args": [
-        "-y",
-        "Azure.Bicep.McpServer"
-      ]
-    },
-    "azure": {
-      "type": "stdio",
-      "command": "npx",
-      "args": [
-        "-y",
-        "@azure/mcp@latest",
-        "server",
-        "start"
-      ],
-      "env": {
-        "AZURE_MCP_COLLECT_TELEMETRY": "false"
-      }
-    }
-  }
+	"servers": {
+		"bicep": {
+			"type": "stdio",
+			"command": "dnx",
+			"args": [
+				"-y",
+				"Azure.Bicep.McpServer"
+			]
+		},
+		"azure": {
+			"type": "stdio",
+			"command": "dnx",
+			"args": [
+				"Azure.Mcp@2.0.5",
+				"--yes",
+				"--",
+				"server",
+				"start"
+			],
+			"env": {
+				"AZURE_MCP_COLLECT_TELEMETRY": "false"
+			}
+		},
+		"com.microsoft/nuget": {
+			"type": "stdio",
+			"command": "dnx",
+			"args": [
+				"NuGet.Mcp.Server@1.4.16",
+				"--yes"
+			],
+			"gallery": "https://api.mcp.github.com",
+			"version": "1.4.16"
+		}
+	},
+	"inputs": []
 }

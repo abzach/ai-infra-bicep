@@ -10,10 +10,11 @@
     },
     "azure": {
       "type": "stdio",
-      "command": "npx",
+      "command": "dnx",
       "args": [
-        "-y",
-        "@azure/mcp@latest",
+        "Azure.Mcp@2.0.5",
+        "--yes",
+        "--",
         "server",
         "start"
       ],

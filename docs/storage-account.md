@@ -4,7 +4,7 @@ This document covers the configuration, security controls, and blob services for
 
 ## Deployment flag
 
-This component is controlled by `deployStorage` in your environment YAML. When set to `false`, the next `scripts/deploy.ps1` run removes the blob private endpoint and then the storage account. `deployAiFoundry` requires `deployStorage` because the AI Hub needs a backing storage account.
+This component is controlled by `deployStorage` in your environment YAML. When set to `false`, the next `scripts/deploy.ps1` run removes the blob private endpoint and then the storage account. `deployAiFoundry` requires `deployStorage` for Agent file storage.
 
 ## Resource Overview
 
@@ -36,11 +36,11 @@ The storage account serves as the shared data plane for Azure AI Foundry Hub, st
 All access to the storage account occurs through:
 1. **Private Endpoint:** `st<baseName><env><suffix>-blob-pe` connected to the `services` subnet (`10.0.1.0/24`).
 2. **Private DNS:** `privatelink.blob.core.windows.net` resolving internally.
-3. **Authentication:** Pure Entra ID authentication via `Storage Blob Data Contributor` role assignments for administrators and the AI Hub managed identity.
+3. **Authentication:** Pure Entra ID authentication. The Foundry project identity receives scoped blob data roles for Agent files.
 
 ## Related Documentation
 
 - [Private Endpoints Documentation](private-endpoints.md)
 - [Role-Based Access Control Documentation](role-based-access-control.md)
-- [AI Hub Documentation](ai-hub.md)
+- [Microsoft Foundry Account](foundry-account.md)
 - [Documentation Index](index.md)

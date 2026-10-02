@@ -253,18 +253,31 @@ if ($Mode -eq 'Validate' -or $Mode -eq 'Smoke') {
     $storageAccountName       = $config.storageAccountName
     $keyVaultName             = $config.keyVaultName
     $openAiAccountName        = $config.openAiAccountName
+    $foundryAccountName       = $config.foundryAccountName
     $hubName                  = $config.hubName
     $projectName              = $config.projectName
+    $aiSearchName             = $config.aiSearchName
     $sharedManagedIdentityName = $config.sharedManagedIdentityName
     $automationAccountName    = $config.automationAccountName
     $vnetName                 = $config.vnetName
     $vmName                   = $config.vmName
+    $staticWebAppName         = $config.staticWebAppName
+    $cosmosDbAccountName      = $config.cosmosDbAccountName
+    $apiManagementServiceName = $config.apiManagementServiceName
+    $appServicePlanName       = $config.appServicePlanName
+    $appServiceName           = $config.appServiceName
+    $postgresServerName       = $config.postgresServerName
 
     # Component deployment flags decide which resources must exist; disabled components must be absent.
     $deployStorageFlag      = $config.deployStorage -eq 'true'
     $deployLogAnalyticsFlag = $config.deployLogAnalytics -eq 'true'
     $deployAiFoundryFlag    = $config.deployAiFoundry -eq 'true'
     $deployVmFlag           = $config.deployVm -eq 'true'
+    $deployPostgresFlag     = $config.deployPostgres -eq 'true'
+    $deployStaticWebAppFlag = $config.deployStaticWebApp -eq 'true'
+    $deployCosmosDbFlag     = $config.deployCosmosDb -eq 'true'
+    $deployApiManagementFlag = $config.deployApiManagement -eq 'true'
+    $deployAppServiceFlag   = $config.deployAppService -eq 'true'
 
     $passed = $true
 
@@ -344,25 +357,119 @@ if ($Mode -eq 'Validate' -or $Mode -eq 'Smoke') {
         else { Write-Needed 'Fail: OpenAI local authentication must remain disabled'; $passed = $false }
     }
 
-    $hub = az resource show --name $hubName --resource-group $WorkloadResourceGroupName --resource-type Microsoft.MachineLearningServices/workspaces --output json 2>$null | ConvertFrom-Json
-    $project = az resource show --name $projectName --resource-group $WorkloadResourceGroupName --resource-type Microsoft.MachineLearningServices/workspaces --output json 2>$null | ConvertFrom-Json
+    $foundryAccount = az cognitiveservices account show --name $foundryAccountName --resource-group $FoundationResourceGroupName --output json 2>$null | ConvertFrom-Json
+    $projectId = "/subscriptions/$subscriptionId/resourceGroups/$FoundationResourceGroupName/providers/Microsoft.CognitiveServices/accounts/$foundryAccountName/projects/$projectName"
+    $project = az resource show --ids $projectId --api-version 2025-04-01-preview --output json 2>$null | ConvertFrom-Json
+    $capabilityHost = az resource show --ids "$projectId/capabilityHosts/agents" --api-version 2025-04-01-preview --output json 2>$null | ConvertFrom-Json
+    $aiSearch = az search service show --name $aiSearchName --resource-group $WorkloadResourceGroupName --output json 2>$null | ConvertFrom-Json
+    $legacyHub = az resource show --name $hubName --resource-group $WorkloadResourceGroupName --resource-type Microsoft.MachineLearningServices/workspaces --output json 2>$null | ConvertFrom-Json
+    $legacyProject = az resource show --name $projectName --resource-group $WorkloadResourceGroupName --resource-type Microsoft.MachineLearningServices/workspaces --output json 2>$null | ConvertFrom-Json
     if (-not $deployAiFoundryFlag) {
-        if ($hub -or $project) { Write-Needed 'Fail: deployAiFoundry=false but the AI Hub or AI Project still exists'; $passed = $false }
-        else { Write-Info 'Skip: deployAiFoundry=false; AI Hub and AI Project checks skipped.' }
+        if ($foundryAccount -or $project -or $aiSearch) { Write-Needed 'Fail: deployAiFoundry=false but the Foundry account, project, or AI Search still exists'; $passed = $false }
+        else { Write-Info 'Skip: deployAiFoundry=false; Foundry checks skipped.' }
     } else {
-        if (-not $hub) { Write-Needed "Fail: AI Hub '$hubName' not found"; $passed = $false }
-        else { Write-Exists "Pass: AI Hub '$hubName' exists" }
-
-        if (-not $project) { Write-Needed "Fail: AI Project '$projectName' not found"; $passed = $false }
-        else { Write-Exists "Pass: AI Project '$projectName' exists" }
+        if (-not $foundryAccount -or $foundryAccount.kind -ne 'AIServices') { Write-Needed "Fail: Foundry account '$foundryAccountName' not found or kind is not AIServices"; $passed = $false }
+        else { Write-Exists "Pass: Foundry account '$foundryAccountName' exists" }
+        if (-not $project) { Write-Needed "Fail: Foundry project '$projectName' not found"; $passed = $false }
+        else { Write-Exists "Pass: Foundry project '$projectName' exists" }
+        if (-not $capabilityHost -or $capabilityHost.properties.capabilityHostKind -ne 'Agents') { Write-Needed "Fail: Foundry Agent capability host not ready"; $passed = $false }
+        else { Write-Exists 'Pass: Foundry Agent capability host is ready' }
+        if (-not $aiSearch) { Write-Needed "Fail: Azure AI Search '$aiSearchName' not found"; $passed = $false }
+        elseif ($aiSearch.publicNetworkAccess -eq 'disabled' -and $aiSearch.disableLocalAuth -eq $true) { Write-Exists "Pass: Azure AI Search '$aiSearchName' is private and uses Entra authentication" }
+        else { Write-Needed "Fail: Azure AI Search '$aiSearchName' security settings are incorrect"; $passed = $false }
+        if ($legacyHub -or $legacyProject) { Write-Needed 'Fail: legacy AI Hub or Project still exists after Foundry cutover'; $passed = $false }
+        else { Write-Exists 'Pass: legacy AI Hub and Project are removed' }
     }
 
     $sharedManagedIdentity = az identity show --name $sharedManagedIdentityName --resource-group $FoundationResourceGroupName --output json 2>$null | ConvertFrom-Json
     if (-not $sharedManagedIdentity) { Write-Needed "Fail: shared managed identity '$sharedManagedIdentityName' not found"; $passed = $false }
     else { Write-Exists "Pass: shared managed identity '$sharedManagedIdentityName' exists" }
 
+    $staticWebApp = az resource show --name $staticWebAppName --resource-group $WorkloadResourceGroupName --resource-type Microsoft.Web/staticSites --output json 2>$null | ConvertFrom-Json
+    if (-not $deployStaticWebAppFlag) {
+        if ($staticWebApp) { Write-Needed "Fail: deployStaticWebApp=false but Static Web App '$staticWebAppName' still exists"; $passed = $false }
+        else { Write-Info 'Skip: deployStaticWebApp=false; Static Web Apps checks skipped.' }
+    } elseif (-not $staticWebApp) {
+        Write-Needed "Fail: Static Web App '$staticWebAppName' not found"; $passed = $false
+    } elseif ($staticWebApp.sku.name -eq 'Free' -and $staticWebApp.sku.tier -eq 'Free') {
+        Write-Exists "Pass: Static Web App '$staticWebAppName' uses the Free plan"
+    } else {
+        Write-Needed "Fail: Static Web App SKU is '$($staticWebApp.sku.name)/$($staticWebApp.sku.tier)', expected Free/Free"; $passed = $false
+    }
+
+    $cosmosDb = az cosmosdb show --name $cosmosDbAccountName --resource-group $WorkloadResourceGroupName --output json 2>$null | ConvertFrom-Json
+    if (-not $deployCosmosDbFlag) {
+        if ($cosmosDb) { Write-Needed "Fail: deployCosmosDb=false but Cosmos DB account '$cosmosDbAccountName' still exists"; $passed = $false }
+        else { Write-Info 'Skip: deployCosmosDb=false; Cosmos DB checks skipped.' }
+    } elseif (-not $cosmosDb) {
+        Write-Needed "Fail: Cosmos DB account '$cosmosDbAccountName' not found"; $passed = $false
+    } else {
+        $expectedCosmosFreeTier = $config.cosmosDbFreeTierEnabled -eq 'true'
+        if ($cosmosDb.enableFreeTier -eq $expectedCosmosFreeTier) { Write-Exists "Pass: Cosmos DB free tier matches configured value '$expectedCosmosFreeTier'" }
+        else { Write-Needed "Fail: Cosmos DB free tier is '$($cosmosDb.enableFreeTier)', expected '$expectedCosmosFreeTier'"; $passed = $false }
+        if ($cosmosDb.publicNetworkAccess -eq 'Disabled') { Write-Exists 'Pass: Cosmos DB public network access is disabled' }
+        else { Write-Needed "Fail: Cosmos DB public network access is '$($cosmosDb.publicNetworkAccess)', expected Disabled"; $passed = $false }
+        if ($cosmosDb.disableLocalAuth -eq $true) { Write-Exists 'Pass: Cosmos DB local key authentication is disabled' }
+        else { Write-Needed 'Fail: Cosmos DB local key authentication is not disabled'; $passed = $false }
+
+        $cosmosDbDatabase = az cosmosdb sql database show --account-name $cosmosDbAccountName --resource-group $WorkloadResourceGroupName --name $config.cosmosDbDatabaseName --output json 2>$null | ConvertFrom-Json
+        if (-not $cosmosDbDatabase) {
+            Write-Needed "Fail: Cosmos DB SQL database '$($config.cosmosDbDatabaseName)' not found"; $passed = $false
+        } else {
+            Write-Exists "Pass: Cosmos DB SQL database '$($config.cosmosDbDatabaseName)' exists"
+        }
+
+        $cosmosDbContainer = az cosmosdb sql container show --account-name $cosmosDbAccountName --resource-group $WorkloadResourceGroupName --database-name $config.cosmosDbDatabaseName --name $config.cosmosDbContainerName --output json 2>$null | ConvertFrom-Json
+        if (-not $cosmosDbContainer) {
+            Write-Needed "Fail: Cosmos DB SQL container '$($config.cosmosDbContainerName)' not found"; $passed = $false
+        } else {
+            Write-Exists "Pass: Cosmos DB SQL container '$($config.cosmosDbContainerName)' exists"
+        }
+    }
+
+    $apiManagement = az apim show --name $apiManagementServiceName --resource-group $FoundationResourceGroupName --output json 2>$null | ConvertFrom-Json
+    if (-not $deployApiManagementFlag) {
+        if ($apiManagement) { Write-Needed "Fail: deployApiManagement=false but API Management service '$apiManagementServiceName' still exists"; $passed = $false }
+        else { Write-Info 'Skip: deployApiManagement=false; API Management checks skipped.' }
+    } elseif (-not $apiManagement) {
+        Write-Needed "Fail: API Management service '$apiManagementServiceName' not found"; $passed = $false
+    } elseif ($apiManagement.sku.name -eq 'Consumption') {
+        Write-Exists "Pass: API Management service '$apiManagementServiceName' uses the Consumption tier"
+    } else {
+        Write-Needed "Fail: API Management SKU is '$($apiManagement.sku.name)', expected Consumption"; $passed = $false
+    }
+
+    $appService = az webapp show --name $appServiceName --resource-group $FoundationResourceGroupName --output json 2>$null | ConvertFrom-Json
+    $appServicePlan = az appservice plan show --name $appServicePlanName --resource-group $FoundationResourceGroupName --output json 2>$null | ConvertFrom-Json
+    if (-not $deployAppServiceFlag) {
+        if ($appService -or $appServicePlan) { Write-Needed 'Fail: deployAppService=false but the App Service or its plan still exists'; $passed = $false }
+        else { Write-Info 'Skip: deployAppService=false; App Service checks skipped.' }
+    } elseif (-not $appService -or -not $appServicePlan) {
+        Write-Needed "Fail: App Service '$appServiceName' or plan '$appServicePlanName' not found"; $passed = $false
+    } else {
+        if ($appServicePlan.sku.name -eq 'F1' -and $appServicePlan.sku.tier -eq 'Free') { Write-Exists "Pass: App Service plan '$appServicePlanName' uses the F1 Free tier" }
+        else { Write-Needed "Fail: App Service plan SKU is '$($appServicePlan.sku.name)/$($appServicePlan.sku.tier)', expected F1/Free"; $passed = $false }
+        if ($appService.httpsOnly -eq $true -and $appService.siteConfig.minTlsVersion -eq '1.2' -and $appService.siteConfig.ftpsState -eq 'Disabled') {
+            Write-Exists "Pass: App Service '$appServiceName' enforces HTTPS, TLS 1.2, and disabled FTPS"
+        } else {
+            Write-Needed "Fail: App Service '$appServiceName' transport settings do not match the secure F1 baseline"; $passed = $false
+        }
+    }
+
+    $postgresServer = az postgres flexible-server show --name $postgresServerName --resource-group $WorkloadResourceGroupName --output json 2>$null | ConvertFrom-Json
+    if (-not $deployPostgresFlag) {
+        if ($postgresServer) { Write-Needed "Fail: deployPostgres=false but PostgreSQL Flexible Server '$postgresServerName' still exists"; $passed = $false }
+        else { Write-Info 'Skip: deployPostgres=false; PostgreSQL checks skipped.' }
+    } elseif (-not $postgresServer) {
+        Write-Needed "Fail: PostgreSQL Flexible Server '$postgresServerName' not found"; $passed = $false
+    } elseif ($postgresServer.sku.name -eq $config.postgresSkuName -and $postgresServer.sku.tier -eq 'Burstable') {
+        Write-Exists "Pass: PostgreSQL Flexible Server '$postgresServerName' uses the configured Burstable SKU"
+    } else {
+        Write-Needed "Fail: PostgreSQL SKU is '$($postgresServer.sku.name)/$($postgresServer.sku.tier)', expected '$($config.postgresSkuName)/Burstable'"; $passed = $false
+    }
+
     if ($config.deployAutomation -eq 'true') {
-        $automationAccountResourceUri = "https://management.azure.com/subscriptions/$subscriptionId/resourceGroups/$WorkloadResourceGroupName/providers/Microsoft.Automation/automationAccounts/$automationAccountName"
+        $automationAccountResourceUri = "https://management.azure.com/subscriptions/$subscriptionId/resourceGroups/$FoundationResourceGroupName/providers/Microsoft.Automation/automationAccounts/$automationAccountName"
         $automationAccountUri = "$automationAccountResourceUri`?api-version=2024-10-23"
         $automationAccount = az rest --method get --url $automationAccountUri --output json 2>$null | ConvertFrom-Json
         if (-not $automationAccount) {
@@ -412,15 +519,24 @@ if ($Mode -eq 'Validate' -or $Mode -eq 'Smoke') {
         else { Write-Needed "Fail: VNet address spaces '$($vnet.addressSpace.addressPrefixes -join ', ')' do not include '$($config.vnetAddressSpace)'"; $passed = $false }
         $servicesSubnet = $vnet.subnets | Where-Object name -eq 'services'
         $vmSubnet = $vnet.subnets | Where-Object name -eq 'vm'
+        $agentSubnet = $vnet.subnets | Where-Object name -eq 'agent'
         if ($servicesSubnet.addressPrefix -eq $config.servicesSubnetAddressPrefix) { Write-Exists "Pass: services subnet is '$($config.servicesSubnetAddressPrefix)'" }
         else { Write-Needed "Fail: services subnet is '$($servicesSubnet.addressPrefix)', expected '$($config.servicesSubnetAddressPrefix)'"; $passed = $false }
         if ($vmSubnet.addressPrefix -eq $config.vmSubnetAddressPrefix) { Write-Exists "Pass: VM subnet is '$($config.vmSubnetAddressPrefix)'" }
         else { Write-Needed "Fail: VM subnet is '$($vmSubnet.addressPrefix)', expected '$($config.vmSubnetAddressPrefix)'"; $passed = $false }
+        if ($deployAiFoundryFlag -and $agentSubnet.addressPrefix -eq $config.agentSubnetAddressPrefix -and $agentSubnet.delegations.serviceName -contains 'Microsoft.App/environments') {
+            Write-Exists "Pass: Agent subnet is '$($config.agentSubnetAddressPrefix)' and delegated to Microsoft.App/environments"
+        } elseif ($deployAiFoundryFlag) {
+            Write-Needed 'Fail: Foundry Agent subnet prefix or delegation is incorrect'; $passed = $false
+        }
     }
 
     $vmNicName = "$vmName-nic"
     $vmNic = az network nic show --name $vmNicName --resource-group $FoundationResourceGroupName --output json 2>$null | ConvertFrom-Json
-    if (-not $vmNic) {
+    if (-not $deployVmFlag) {
+        if ($vmNic) { Write-Needed "Fail: deployVm=false but VM NIC '$vmNicName' still exists"; $passed = $false }
+        else { Write-Info 'Skip: deployVm=false; VM NIC checks skipped.' }
+    } elseif (-not $vmNic) {
         Write-Needed "Fail: VM NIC '$vmNicName' not found"; $passed = $false
     } else {
         $expectedAcceleratedNetworking = $config.vmAcceleratedNetworking -eq 'true'
@@ -428,14 +544,19 @@ if ($Mode -eq 'Validate' -or $Mode -eq 'Smoke') {
         else { Write-Needed "Fail: accelerated networking is '$($vmNic.enableAcceleratedNetworking)', expected '$expectedAcceleratedNetworking'"; $passed = $false }
     }
 
-    $privateEndpoints = az network private-endpoint list --resource-group $FoundationResourceGroupName --query "[].name" --output tsv 2>$null
-    if (($privateEndpoints | Measure-Object).Count -lt 3) {
-        Write-Needed 'Fail: expected at least 3 private endpoints'; $passed = $false
+    $privateEndpoints = @(az network private-endpoint list --resource-group $FoundationResourceGroupName --query "[].name" --output tsv 2>$null)
+    $expectedPrivateEndpoints = @("$keyVaultName-pe", "$openAiAccountName-account-pe")
+    if ($deployStorageFlag) { $expectedPrivateEndpoints += "$storageAccountName-blob-pe" }
+    if ($deployCosmosDbFlag) { $expectedPrivateEndpoints += "$cosmosDbAccountName-sql-pe" }
+    if ($deployAiFoundryFlag) { $expectedPrivateEndpoints += @("$foundryAccountName-account-pe", "$aiSearchName-search-pe") }
+    $missingPrivateEndpoints = @($expectedPrivateEndpoints | Where-Object { $privateEndpoints -notcontains $_ })
+    if ($missingPrivateEndpoints.Count -gt 0) {
+        Write-Needed "Fail: missing private endpoints: $($missingPrivateEndpoints -join ', ')"; $passed = $false
     } else {
-        Write-Exists 'Pass: private endpoints found for dependent services'
+        Write-Exists 'Pass: all expected private endpoints are present'
     }
 
-    $vm = az vm show --name $vmName --resource-group $WorkloadResourceGroupName --show-details --output json 2>$null | ConvertFrom-Json
+    $vm = az vm show --name $vmName --resource-group $FoundationResourceGroupName --show-details --output json 2>$null | ConvertFrom-Json
     if (-not $deployVmFlag) {
         if ($vm) { Write-Needed "Fail: deployVm=false but jumpbox VM '$vmName' still exists"; $passed = $false }
         else { Write-Info 'Skip: deployVm=false; jumpbox VM checks skipped.' }
@@ -487,7 +608,7 @@ if ($Mode -eq 'Validate' -or $Mode -eq 'Smoke') {
     } else {
         $autoShutdownScheduleName = "shutdown-computevm-$vmName"
         $shutdownRaw = az resource show `
-            --resource-group $WorkloadResourceGroupName `
+            --resource-group $FoundationResourceGroupName `
             --resource-type 'Microsoft.DevTestLab/schedules' `
             --name $autoShutdownScheduleName `
             --output json 2>$null
@@ -545,7 +666,7 @@ if ($Mode -eq 'Validate' -or $Mode -eq 'Smoke') {
     if (-not $usingExistingOsDisk) {
         $expectedExtensions += 'AzureDiskEncryption'
     }
-    $extensionsRaw = az vm extension list --vm-name $vmName --resource-group $WorkloadResourceGroupName --output json 2>$null
+    $extensionsRaw = az vm extension list --vm-name $vmName --resource-group $FoundationResourceGroupName --output json 2>$null
     if ([string]::IsNullOrWhiteSpace($extensionsRaw)) {
         Write-Needed 'Fail: could not retrieve VM extension list'; $passed = $false
     } else {
@@ -609,7 +730,7 @@ Write-Host 'LAUNCHER_VALIDATION_OK'
     Set-Content -Path $launcherValidationFile -Value $launcherValidationScript -Encoding UTF8
 
     $launcherValidationResult = az vm run-command invoke `
-        --resource-group $WorkloadResourceGroupName `
+        --resource-group $FoundationResourceGroupName `
         --name $vmName `
         --command-id RunPowerShellScript `
         --scripts "@$launcherValidationFile" `
@@ -657,7 +778,11 @@ Write-Host 'LAUNCHER_VALIDATION_OK'
         'privatelink.vaultcore.azure.net',
         'privatelink.openai.azure.com',
         'privatelink.blob.core.windows.net',
-        'privatelink.api.azureml.ms'
+        'privatelink.api.azureml.ms',
+        'privatelink.documents.azure.com',
+        'privatelink.services.ai.azure.com',
+        'privatelink.cognitiveservices.azure.com',
+        'privatelink.search.windows.net'
     )
     $dnsZoneList = az network private-dns zone list --resource-group $FoundationResourceGroupName --query '[].name' --output tsv 2>$null
     $dnsZonesMissing = $false
@@ -697,19 +822,12 @@ Write-Host 'LAUNCHER_VALIDATION_OK'
         }
     }
 
-    # ---- D3: AI Hub and Project public access disabled ----
-    if ($hub) {
-        if ($hub.properties.publicNetworkAccess -eq 'Disabled') {
-            Write-Exists "Pass: AI Hub '$hubName' public network access is Disabled"
+    # ---- D3: Microsoft Foundry account public access disabled ----
+    if ($foundryAccount) {
+        if ($foundryAccount.properties.publicNetworkAccess -eq 'Disabled') {
+            Write-Exists "Pass: Foundry account '$foundryAccountName' public network access is Disabled"
         } else {
-            Write-Needed "Fail: AI Hub '$hubName' publicNetworkAccess is '$($hub.properties.publicNetworkAccess)', expected Disabled"; $passed = $false
-        }
-    }
-    if ($project) {
-        if ($project.properties.publicNetworkAccess -eq 'Disabled') {
-            Write-Exists "Pass: AI Project '$projectName' public network access is Disabled"
-        } else {
-            Write-Needed "Fail: AI Project '$projectName' publicNetworkAccess is '$($project.properties.publicNetworkAccess)', expected Disabled"; $passed = $false
+            Write-Needed "Fail: Foundry account '$foundryAccountName' publicNetworkAccess is '$($foundryAccount.properties.publicNetworkAccess)', expected Disabled"; $passed = $false
         }
     }
 
@@ -750,7 +868,7 @@ Write-Host 'LAUNCHER_VALIDATION_OK'
         }
     }
 
-    # ---- E2: Diagnostic settings on OpenAI and AI Hub ----
+    # ---- E2: Diagnostic settings on OpenAI and Microsoft Foundry ----
     $auditDiagnosticsEnabled = $config.enableAuditDiagnostics -eq 'true'
     if (-not $auditDiagnosticsEnabled) {
         Write-Info 'Skip: enableAuditDiagnostics=false; diagnostic settings check skipped.'
@@ -764,13 +882,13 @@ Write-Host 'LAUNCHER_VALIDATION_OK'
                 Write-Needed 'Fail: no diagnostic settings found on OpenAI'; $passed = $false
             }
         }
-        if ($hub) {
-            $hubDiag = az monitor diagnostic-settings list --resource $hub.id --output json 2>$null | ConvertFrom-Json
-            $hubDiagCount = if ($null -eq $hubDiag) { 0 } elseif ($hubDiag -is [System.Array]) { $hubDiag.Count } elseif ($hubDiag.PSObject.Properties['value']) { @($hubDiag.value).Count } else { 1 }
-            if ($hubDiagCount -ge 1) {
-                Write-Exists "Pass: diagnostic settings configured on AI Hub '$hubName'"
+        if ($foundryAccount) {
+            $foundryDiag = az monitor diagnostic-settings list --resource $foundryAccount.id --output json 2>$null | ConvertFrom-Json
+            $foundryDiagCount = if ($null -eq $foundryDiag) { 0 } elseif ($foundryDiag -is [System.Array]) { $foundryDiag.Count } elseif ($foundryDiag.PSObject.Properties['value']) { @($foundryDiag.value).Count } else { 1 }
+            if ($foundryDiagCount -ge 1) {
+                Write-Exists "Pass: diagnostic settings configured on Foundry account '$foundryAccountName'"
             } else {
-                Write-Needed "Fail: no diagnostic settings found on AI Hub '$hubName'"; $passed = $false
+                Write-Needed "Fail: no diagnostic settings found on Foundry account '$foundryAccountName'"; $passed = $false
             }
         }
     }
@@ -886,7 +1004,7 @@ Write-Host $response.choices[0].message.content
     $smokeScript = $smokeScript -replace '__MI_CLIENT_ID__',       $smokeMiClientId
 
     az vm run-command invoke `
-        --resource-group $WorkloadResourceGroupName `
+        --resource-group $FoundationResourceGroupName `
         --name $vmName `
         --command-id RunPowerShellScript `
         --scripts $smokeScript `
@@ -1007,7 +1125,7 @@ Test-Model -DeploymentName $dep2 -Label "Secondary model"
     Set-Content -Path $tempScriptFile -Value $dualScript -Encoding UTF8
 
     $result = az vm run-command invoke `
-        --resource-group $WorkloadResourceGroupName `
+        --resource-group $FoundationResourceGroupName `
         --name $vmName `
         --command-id RunPowerShellScript `
         --scripts "@$tempScriptFile" `

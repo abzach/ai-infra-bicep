@@ -7,6 +7,7 @@ applyTo: "scripts/deploy.ps1,scripts/config.ps1,scripts/common.ps1"
 - Preserve the early no-op path in `deploy.ps1`: if resources exist and the recorded `desiredStateHash` matches local desired state, exit before provider registration, role cleanup, Bicep deployment, secret sync, VM bootstrap, or password reset.
 - Use Azure Resource Manager for Key Vault secret writes; do not require Key Vault data-plane access from the deployment host.
 - Keep VM app transfer on Azure VM Run Command; do not reintroduce Storage data-plane upload from the workstation or CI runner.
+- Do not skip app bootstrap solely because the Key Vault content hash matches: a replaced VM may have no chat files. Verify the guest launcher through VM Run Command before skipping transfer.
 - Surface failures explicitly with `Write-Error` or repository-standard warning output; do not hide Azure CLI failures behind success-shaped defaults.
 - Keep CI behavior non-interactive. CI must pass `-VmAdminPassword` from a protected secret and must not print or write credentials.
 - If a change intentionally needs to bypass no-op behavior, use `-ForceRedeploy` for infrastructure or `-ForceAppBootstrap` for app package refresh.
@@ -14,6 +15,8 @@ applyTo: "scripts/deploy.ps1,scripts/config.ps1,scripts/common.ps1"
 - Provision Automation runbook metadata and schedules in Bicep, but create job-schedule links only after `deploy.ps1` has uploaded and published the runbook.
 - Keep Bicep CLI setup non-interactive: compare the installed Azure CLI-managed version with `az bicep list-versions`, upgrade when older, verify the result, and fail explicitly if installation or upgrade cannot complete.
 - Update `scripts/README.md`, the deployment workflow diagram in the root `README.md`, and `AGENTS.md` in the same change; see `documentation-sync.instructions.md`.
+- When changing a module's resource group, add an idempotent move step to `Move-LegacyWorkloadResourcesToFoundation` and verify with ARM `validateMoveResources` first. Known blockers: Spot VMs cannot move (delete with the OS disk detached, move the disk, recreate), Cognitive Services accounts cannot move while a private endpoint is connected, App Service plans must move with their apps, and Automation job-schedule names derive from the account ID so old links must be deleted after a move.
+- Do not move Foundry accounts with Agent Service: moved projects retain unusable identities and lose capability hosts. Delete and purge the legacy account after safeguarding project data, then let Bicep recreate it. If an interrupted deployment leaves an `agent` subnet service link, cancel the orphaned ARM deployment and use a distinct delegated recovery subnet; preserve the linked subnet. Before redeploying a recreated account, delete only its disconnected private endpoint so ARM can create a new connection.
 
 ## Keep this skill current
 

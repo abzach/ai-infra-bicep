@@ -26,9 +26,6 @@ param hubName string = ''
 @description('AI Project workspace name. Pass empty string if AI Foundry is not deployed.')
 param projectName string = ''
 
-@description('Jumpbox VM name. Pass empty string if VM is not deployed.')
-param vmName string = ''
-
 @description('Log Analytics workspace name. Pass empty string if Log Analytics is not deployed.')
 param logAnalyticsWorkspaceName string = ''
 
@@ -51,10 +48,6 @@ resource aiHub 'Microsoft.MachineLearningServices/workspaces@2024-10-01' existin
 
 resource aiProject 'Microsoft.MachineLearningServices/workspaces@2024-10-01' existing = {
   name: !empty(projectName) ? projectName : 'dummy-project'
-}
-
-resource vm 'Microsoft.Compute/virtualMachines@2024-03-01' existing = {
-  name: !empty(vmName) ? vmName : 'dummy-vm'
 }
 
 resource logAnalyticsWorkspace 'Microsoft.OperationalInsights/workspaces@2023-09-01' existing = {
@@ -148,17 +141,6 @@ resource adminAiProjectAdmin 'Microsoft.Authorization/roleAssignments@2022-04-01
   scope: aiProject
   properties: {
     roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'b78c5d69-af96-48a3-bf8d-a8b4d589de94')
-    principalId: admin.objectId
-    principalType: admin.?principalType ?? 'User'
-  }
-}]
-
-// Virtual Machine Administrator Login (1c0163c0-47e6-4577-8991-ea5c82e286e4)
-resource adminVmAdminLogin 'Microsoft.Authorization/roleAssignments@2022-04-01' = [for (admin, i) in adminActors: if (!empty(vmName)) {
-  name: guid(resourceGroup().id, vm.id, admin.objectId, '1c0163c0-47e6-4577-8991-ea5c82e286e4')
-  scope: vm
-  properties: {
-    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '1c0163c0-47e6-4577-8991-ea5c82e286e4')
     principalId: admin.objectId
     principalType: admin.?principalType ?? 'User'
   }
@@ -317,17 +299,6 @@ resource userAiProjectDataScientist 'Microsoft.Authorization/roleAssignments@202
   scope: aiProject
   properties: {
     roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'f6c7c914-8db3-469d-8ca1-694a8f32e121')
-    principalId: usr.objectId
-    principalType: usr.?principalType ?? 'User'
-  }
-}]
-
-// Virtual Machine User Login (fb879df8-f326-4884-b1cf-06f3ad86be52)
-resource userVmUserLogin 'Microsoft.Authorization/roleAssignments@2022-04-01' = [for (usr, i) in userActors: if (!empty(vmName)) {
-  name: guid(resourceGroup().id, vm.id, usr.objectId, 'fb879df8-f326-4884-b1cf-06f3ad86be52')
-  scope: vm
-  properties: {
-    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'fb879df8-f326-4884-b1cf-06f3ad86be52')
     principalId: usr.objectId
     principalType: usr.?principalType ?? 'User'
   }

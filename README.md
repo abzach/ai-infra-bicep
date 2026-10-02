@@ -2,15 +2,23 @@
 
 This repository deploys a private Azure AI Foundry environment for learning,
 prototyping, and development. It uses Bicep and PowerShell to create the
-network, Azure OpenAI models, AI Hub and Project workspaces, Key Vault,
-Storage, a free-tier-sized PostgreSQL Flexible Server, monitoring, managed
-identities, and an optional Windows jumpbox with a terminal chat app.
+network, Azure OpenAI models, a current Microsoft Foundry account/project with Agent Service, Key Vault,
+Storage, a free-tier-sized PostgreSQL Flexible Server, Azure Static Web Apps,
+Azure Cosmos DB free tier, Azure API Management Consumption tier, an F1 Linux
+App Service, monitoring, managed identities, and an optional Windows jumpbox
+with a terminal chat app.
 
 The deployment is secure by default:
 
 - Service public network access is disabled.
 - Private endpoints and private DNS provide service connectivity.
+- Foundry Agent Service uses a dedicated delegated subnet plus tenant-owned Storage, Cosmos DB, and Azure AI Search.
+- When a failed Foundry creation leaves the Agent subnet linked, `agentRecoverySubnetAddressPrefix` in environment YAML selects a new delegated subnet without deleting the original.
 - Entra ID and resource-scoped RBAC are used instead of service keys.
+- Cosmos DB uses a private endpoint, disabled local key authentication, and managed-identity SQL RBAC.
+- Static Web Apps is deployed on the Free plan as a public static-hosting surface; do not put secrets or private data in static content.
+- API Management is deployed on the Consumption tier as a public API gateway surface; keep usage within the included monthly call allowance when targeting $0.
+- App Service is deployed on the F1 Free Linux plan as a public application surface; it does not support private endpoints or VNet integration.
 - The jumpbox uses Trusted Launch and RDP is restricted to the deployer IP.
 - Image-based jumpboxes use Azure Disk Encryption; migrated attached OS disks retain their existing encryption state.
 - Automation permissions are limited to the individual VM and NSG used by its scheduled runbooks.
@@ -53,8 +61,11 @@ Use `main.ps1` from the repository root for the common environment actions:
 ```mermaid
 flowchart LR
    Deploy[dev/uat-deploy] --> Context[Set subscription from environment YAML]
-   Context --> Bicep[deploy.ps1 and Bicep]
+   Context --> Migration[Recreate legacy Foundry account; move eligible legacy resources]
+   Migration --> Bicep[deploy.ps1 and Bicep]
+   Bicep --> Services[Optional free-tier services: Static Web Apps, App Service, Cosmos DB, API Management, PostgreSQL]
    Bicep --> Publish[Publish runbooks and link schedules]
+   Bicep --> Bootstrap[Install chat app if source changed or VM launcher is missing]
    Deploy --> Rdp[Refresh temporary deployer RDP rule]
    Connect[dev/uat-connect] --> Context
    Context --> Rdp
@@ -152,6 +163,10 @@ Preview it first and run it only with explicit authorization:
 ## Where to find more detail
 
 - [Architecture documentation](docs/README.md)
+- [Azure Static Web Apps](docs/static-web-apps.md)
+- [Azure Cosmos DB](docs/cosmos-db.md)
+- [Azure API Management](docs/api-management.md)
+- [Azure App Service](docs/app-service.md)
 - [Bicep infrastructure](bicep/README.md)
 - [PowerShell automation](scripts/README.md)
 - [Environment configuration](variables/README.md)

@@ -30,7 +30,7 @@ Azure Key Vault provides secure storage for environment configuration, secrets, 
 
 - **ARM Secret Writes:** Deployments write the Jumpbox VM administrator password into Key Vault directly using ARM template resources (`Microsoft.KeyVault/vaults/secrets@2023-07-01`) rather than data-plane commands.
 - **Secrets Officer Role:** The deploying identity is granted `Key Vault Secrets Officer` during deployment to write secrets securely.
-- **Managed Identity Access:** The VM managed identity and AI Hub managed identity are granted `Key Vault Secrets User` role to read secrets via private endpoint over `privatelink.vaultcore.azure.net`.
+- **Managed Identity Access:** The shared application identity receives `Key Vault Secrets User` to read application secrets through `privatelink.vaultcore.azure.net`. Foundry Agent state uses its project identity and does not depend on Key Vault secrets.
 
 ## Related Documentation
 

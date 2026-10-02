@@ -16,6 +16,9 @@ param groupId string
 @description('Private DNS zone resource ID for zone group integration (optional).')
 param dnsZoneId string = ''
 
+@description('Private DNS zone resource IDs for services that require multiple zone registrations.')
+param dnsZoneIds string[] = []
+
 @description('Resource tags to apply.')
 param tags object = {}
 
@@ -41,18 +44,18 @@ resource privateEndpoint 'Microsoft.Network/privateEndpoints@2024-01-01' = {
   }
 }
 
-resource privateDnsZoneGroup 'Microsoft.Network/privateEndpoints/privateDnsZoneGroups@2024-01-01' = if (dnsZoneId != '') {
+var effectiveDnsZoneIds = !empty(dnsZoneIds) ? dnsZoneIds : (!empty(dnsZoneId) ? [dnsZoneId] : [])
+
+resource privateDnsZoneGroup 'Microsoft.Network/privateEndpoints/privateDnsZoneGroups@2024-01-01' = if (!empty(effectiveDnsZoneIds)) {
   parent: privateEndpoint
   name: 'default'
   properties: {
-    privateDnsZoneConfigs: [
-      {
-        name: 'default-zone'
+    privateDnsZoneConfigs: [for (effectiveDnsZoneId, index) in effectiveDnsZoneIds: {
+        name: 'zone-${index}'
         properties: {
-          privateDnsZoneId: dnsZoneId
+          privateDnsZoneId: effectiveDnsZoneId
         }
-      }
-    ]
+    }]
   }
 }
 

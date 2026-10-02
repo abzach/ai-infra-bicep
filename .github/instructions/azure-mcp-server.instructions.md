@@ -4,7 +4,7 @@ applyTo: "**/*.bicep,**/*.bicepparam,scripts/**/*.ps1,variables/**/*.yaml,.mcp.j
 
 # Azure MCP server usage
 
-This repository registers the official Azure MCP server (`@azure/mcp`, run through `npx`) in [`.mcp.json`](../../.mcp.json) and [`.vscode/mcp.json`](../../.vscode/mcp.json), alongside the Bicep MCP server. The Azure MCP server acts on the **live subscription that the local `az login` session is already connected to**, so an agent can investigate a real environment instead of guessing.
+This repository registers the official Azure MCP server (NuGet package `Azure.Mcp`, pinned and run through `dnx` from the machine's configured NuGet sources, such as a corporate feed proxy) in [`.mcp.json`](../../.mcp.json) and [`.vscode/mcp.json`](../../.vscode/mcp.json), alongside the Bicep MCP server. npm, `npx`, and npm registries are not permitted by IT policy; never register an MCP server or any other tool that installs from npm. The Azure MCP server acts on the **live subscription that the local `az login` session is already connected to**, so an agent can investigate a real environment instead of guessing.
 
 Use it whenever a task depends on what is actually deployed, what a region/subscription actually supports, or why a deployment actually failed.
 
@@ -64,10 +64,11 @@ Inspect the VM power state, auto-shutdown schedule, Automation schedules, and Lo
 ## Rules
 
 - The Azure MCP server inherits the local `az login` context. Always confirm the active subscription before acting on results.
+- If a live read reports `InvalidAuthenticationTokenTenant`, pass the subscription's tenant explicitly to the Azure MCP tool; VS Code credentials can take precedence over the correct Azure CLI context. Follow the Azure MCP troubleshooting guide before falling back to `az`.
 - Treat Azure MCP as **read-first**. Prefer read/list/query operations for investigation. Do not use it to create, mutate, or delete environment resources that `deploy.ps1` owns; that is the deployment script's job and an out-of-band change breaks the `desiredStateHash` no-op guard.
 - Never echo secrets, credentials, connection strings, tenant IDs, subscription IDs, or object IDs retrieved through Azure MCP into tracked files, documentation, or commit messages.
 - MCP findings are evidence, not validation. Still run `.\scripts\test.ps1 -Mode Static`, `.\scripts\scan.ps1`, and `.\scripts\deploy.ps1 -EnvironmentSuffix <env> -WhatIf`.
-- If the `azure` MCP tools are unavailable, confirm Node.js 20+ and `npx` are on `PATH`, then fall back to `az` CLI commands in the terminal.
+- If the `azure` MCP tools are unavailable, confirm the .NET 10 SDK (which provides `dnx`) is on `PATH`, then fall back to `az` CLI commands in the terminal. Do not substitute an npm-based install.
 
 ## Keep this skill current
 

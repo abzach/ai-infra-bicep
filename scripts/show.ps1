@@ -21,6 +21,37 @@ $subscriptionId = Set-EnterpriseAzureSubscriptionContext -Config $configWithoutS
 $nameSuffix = Get-EnterpriseSubscriptionNameSuffix -SubscriptionId $subscriptionId
 $config = Read-EnterpriseEnvironmentConfig -ScriptRoot $scriptRoot -EnvironmentSuffix $EnvironmentSuffix -NameSuffix $nameSuffix
 
+$instanceViewErrorPath = Join-Path ([System.IO.Path]::GetTempPath()) "show-instance-view-$PID-$([guid]::NewGuid()).log"
+try {
+    $instanceViewJson = az vm get-instance-view `
+        --subscription $subscriptionId `
+        --resource-group $config.FoundationResourceGroupName `
+        --name $config.vmName `
+        --output json 2> $instanceViewErrorPath
+    $instanceViewExitCode = $LASTEXITCODE
+    $instanceViewError = ((Get-Content -LiteralPath $instanceViewErrorPath -Raw -ErrorAction SilentlyContinue) -join "`n").Trim()
+} finally {
+    Remove-Item -LiteralPath $instanceViewErrorPath -Force -ErrorAction SilentlyContinue
+}
+if ($instanceViewExitCode -ne 0 -or [string]::IsNullOrWhiteSpace($instanceViewJson)) {
+    $errorDetail = if ([string]::IsNullOrWhiteSpace($instanceViewError)) { 'Azure CLI returned no error details.' } else { $instanceViewError -replace '\s+', ' ' }
+    throw "Unable to read the status of VM '$($config.vmName)': $errorDetail"
+}
+
+$instanceView = $instanceViewJson | ConvertFrom-Json
+$vmStatuses = @($instanceView.instanceView.statuses)
+$powerStatus = $vmStatuses | Where-Object { $_.code -like 'PowerState/*' } | Select-Object -First 1
+$provisioningStatus = $vmStatuses | Where-Object { $_.code -like 'ProvisioningState/*' } | Select-Object -First 1
+$agentStatus = @($instanceView.instanceView.vmAgent.statuses) | Select-Object -First 1
+if (-not $powerStatus -or $powerStatus.code -ne 'PowerState/running' -or -not $agentStatus -or $agentStatus.displayStatus -ne 'Ready') {
+    $statusDetails = @(
+        if ($provisioningStatus) { "Provisioning: $($provisioningStatus.displayStatus) - $($provisioningStatus.message)" }
+        if ($powerStatus) { "Power: $($powerStatus.displayStatus)" } else { 'Power: unavailable' }
+        if ($agentStatus) { "VM agent: $($agentStatus.displayStatus) - $($agentStatus.message)" } else { 'VM agent: unavailable' }
+    )
+    throw "VM '$($config.vmName)' is not ready for password retrieval. $($statusDetails -join '; ')"
+}
+
 $identityClientId = (az identity show `
     --subscription $subscriptionId `
     --resource-group $config.FoundationResourceGroupName `
@@ -45,20 +76,25 @@ try {
 "@
 
 $remoteScriptPath = Join-Path ([System.IO.Path]::GetTempPath()) "show-password-$PID-$([guid]::NewGuid()).ps1"
+$runCommandErrorPath = Join-Path ([System.IO.Path]::GetTempPath()) "show-run-command-$PID-$([guid]::NewGuid()).log"
 Set-Content -LiteralPath $remoteScriptPath -Value $remoteScript -Encoding utf8NoBOM
 try {
     $runResultJson = az vm run-command invoke `
         --subscription $subscriptionId `
-        --resource-group $config.WorkloadResourceGroupName `
+        --resource-group $config.FoundationResourceGroupName `
         --name $config.vmName `
         --command-id RunPowerShellScript `
         --scripts "@$remoteScriptPath" `
-        --output json 2>$null
+        --output json 2> $runCommandErrorPath
+    $runCommandExitCode = $LASTEXITCODE
+    $runCommandError = ((Get-Content -LiteralPath $runCommandErrorPath -Raw -ErrorAction SilentlyContinue) -join "`n").Trim()
 } finally {
     Remove-Item -LiteralPath $remoteScriptPath -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $runCommandErrorPath -Force -ErrorAction SilentlyContinue
 }
-if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($runResultJson)) {
-    throw "Unable to retrieve the VM password. Confirm '$($config.vmName)' is running and its managed identity can access Key Vault."
+if ($runCommandExitCode -ne 0 -or [string]::IsNullOrWhiteSpace($runResultJson)) {
+    $errorDetail = if ([string]::IsNullOrWhiteSpace($runCommandError)) { 'Azure CLI returned no error details.' } else { $runCommandError -replace '\s+', ' ' }
+    throw "Unable to run the password retrieval command on VM '$($config.vmName)': $errorDetail"
 }
 
 $runResult = $runResultJson | ConvertFrom-Json

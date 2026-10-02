@@ -4,7 +4,7 @@ applyTo: "**/*.bicep,scripts/**/*.ps1,app/**/*.py,.github/workflows/**/*.yml,pip
 
 # Security hardening and review
 
-- Treat public network access on Key Vault, Storage, Azure OpenAI, AI Hub, and AI Project as a high-severity regression.
+- Treat public network access on Key Vault, Storage, Azure OpenAI, Microsoft Foundry, Azure AI Search, and Cosmos DB as a high-severity regression.
 - Preserve Storage HTTPS-only, TLS 1.2+, no blob public access, no shared-key access, and network ACL default deny.
 - Preserve Key Vault RBAC authorization, empty access policies, private endpoint access, and ARM-based secret resource writes.
 - Preserve Azure OpenAI local-auth disablement and model access through Entra ID.

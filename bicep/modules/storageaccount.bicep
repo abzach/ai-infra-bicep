@@ -90,3 +90,4 @@ resource chatAppContainer 'Microsoft.Storage/storageAccounts/blobServices/contai
 
 output id string = storageAccount.id
 output name string = storageAccount.name
+output blobEndpoint string = storageAccount.properties.primaryEndpoints.blob

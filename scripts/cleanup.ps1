@@ -126,7 +126,11 @@ Write-Exists "  Tag guard passed: all existing resource groups have workload='$e
 Write-Info ''
 
 $protectedKeyVaultNames = @($configWithSuffix.keyVaultName, $legacyConfig.keyVaultName) | Sort-Object -Unique
-$protectedDiskNames = @("$($configWithSuffix.vmName)-osdisk", "$($legacyConfig.vmName)-osdisk") | Sort-Object -Unique
+$protectedDiskNames = @("$($configWithSuffix.vmName)-osdisk", "$($legacyConfig.vmName)-osdisk")
+if (-not [string]::IsNullOrWhiteSpace([string]$configWithSuffix.vmExistingOsDiskId)) {
+    $protectedDiskNames += ([string]$configWithSuffix.vmExistingOsDiskId -split '/')[-1]
+}
+$protectedDiskNames = @($protectedDiskNames | Sort-Object -Unique)
 $projectNames = @($configWithSuffix.projectName, $legacyConfig.projectName) | Sort-Object -Unique
 $resourcesToDelete = [System.Collections.Generic.List[object]]::new()
 $resourcesToPreserve = [System.Collections.Generic.List[object]]::new()

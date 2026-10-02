@@ -1091,6 +1091,170 @@ function Set-AutomationJobSchedule {
     Write-Exists "  Runbook '$RunbookName' is linked to schedule '$ScheduleName'."
 }
 
+# Moves resources that earlier revisions deployed to the workload resource group into the
+# foundation resource group. Each step is skipped when the source resource no longer exists.
+function Move-LegacyWorkloadResourcesToFoundation {
+    param(
+        [Parameter(Mandatory)] [string] $SubscriptionId,
+        [Parameter(Mandatory)] [string] $WorkloadResourceGroupName,
+        [Parameter(Mandatory)] [string] $FoundationResourceGroupName,
+        [Parameter(Mandatory)] [string] $VmName,
+        [string] $VmExistingOsDiskId = '',
+        [Parameter(Mandatory)] [string] $AutomationAccountName,
+        [Parameter(Mandatory)] [string] $ApiManagementServiceName,
+        [Parameter(Mandatory)] [string] $AppServicePlanName,
+        [Parameter(Mandatory)] [string] $FoundryAccountName,
+        [switch] $PreviewOnly
+    )
+
+    Write-Task "Checking for resources to move from '$WorkloadResourceGroupName' to '$FoundationResourceGroupName'..."
+
+    $workloadScope = "/subscriptions/$SubscriptionId/resourceGroups/$WorkloadResourceGroupName"
+    $foundationScope = "/subscriptions/$SubscriptionId/resourceGroups/$FoundationResourceGroupName"
+    $testResource = {
+        param([string] $ResourceId)
+        az resource show --ids $ResourceId --output none 2>$null
+        return ($LASTEXITCODE -eq 0)
+    }
+    $moveResources = {
+        param([string[]] $ResourceIds, [string] $Description)
+        if ($PreviewOnly) {
+            Write-Needed "  Preview: $Description would be moved to '$FoundationResourceGroupName'."
+            return
+        }
+        Write-Needed "  Moving $Description to '$FoundationResourceGroupName'..."
+        az resource move --destination-group $FoundationResourceGroupName --ids @ResourceIds --output none
+        if ($LASTEXITCODE -ne 0) {
+            throw "Failed to move $Description to '$FoundationResourceGroupName'. Resolve the move blocker and rerun."
+        }
+        Write-Exists "  Moved $Description."
+    }
+    $movedAny = $false
+
+    $automationId = "$workloadScope/providers/Microsoft.Automation/automationAccounts/$AutomationAccountName"
+    if (& $testResource $automationId) {
+        & $moveResources @($automationId) "Automation Account '$AutomationAccountName'"
+        $movedAny = $true
+        if (-not $PreviewOnly) {
+            # Job-schedule names derive from the account ID, so links created in the old group
+            # would conflict with the ones deploy.ps1 recreates after publication.
+            $jobSchedulesUri = "https://management.azure.com$foundationScope/providers/Microsoft.Automation/automationAccounts/$AutomationAccountName/jobSchedules?api-version=2024-10-23"
+            $jobSchedulesJson = az rest --method get --url $jobSchedulesUri --output json 2>$null
+            if ($LASTEXITCODE -ne 0) {
+                throw "Unable to list job schedules on moved Automation Account '$AutomationAccountName'."
+            }
+            foreach ($jobSchedule in @(($jobSchedulesJson | ConvertFrom-Json).value)) {
+                az rest --method delete --url "https://management.azure.com$($jobSchedule.id)?api-version=2024-10-23" --output none
+                if ($LASTEXITCODE -ne 0) {
+                    throw "Unable to remove stale job schedule '$($jobSchedule.name)' from '$AutomationAccountName'."
+                }
+            }
+        }
+    }
+
+    $apiManagementId = "$workloadScope/providers/Microsoft.ApiManagement/service/$ApiManagementServiceName"
+    if (& $testResource $apiManagementId) {
+        & $moveResources @($apiManagementId) "API Management service '$ApiManagementServiceName'"
+        $movedAny = $true
+    }
+
+    # A plan must move together with every app hosted on it.
+    $appServicePlanId = "$workloadScope/providers/Microsoft.Web/serverFarms/$AppServicePlanName"
+    if (& $testResource $appServicePlanId) {
+        $sitesJson = az webapp list --resource-group $WorkloadResourceGroupName --query '[].{id:id, planId:appServicePlanId}' --output json 2>$null
+        if ($LASTEXITCODE -ne 0) {
+            throw "Unable to list App Service apps in '$WorkloadResourceGroupName'."
+        }
+        $siteIds = @(@($sitesJson | ConvertFrom-Json) | Where-Object { [string]$_.planId -ieq $appServicePlanId } | ForEach-Object { [string]$_.id })
+        & $moveResources (@($appServicePlanId) + $siteIds) "App Service plan '$AppServicePlanName' and $($siteIds.Count) hosted app(s)"
+        $movedAny = $true
+    }
+
+    # Spot VMs cannot be moved, so the VM is deleted with its OS disk detached, the disk is moved,
+    # and Bicep recreates the VM in the foundation group attached to that disk.
+    $vmId = "$workloadScope/providers/Microsoft.Compute/virtualMachines/$VmName"
+    $osDiskName = if ([string]::IsNullOrWhiteSpace($VmExistingOsDiskId)) { "$VmName-osdisk" } else { ($VmExistingOsDiskId -split '/')[-1] }
+    if (& $testResource $vmId) {
+        if ([string]::IsNullOrWhiteSpace($VmExistingOsDiskId)) {
+            throw "VM '$VmName' still lives in '$WorkloadResourceGroupName'. Set vmExistingOsDiskId to '$foundationScope/providers/Microsoft.Compute/disks/<current OS disk name>' so the VM can be recreated on its existing disk, then rerun."
+        }
+        $actualOsDiskName = az vm show --ids $vmId --query 'storageProfile.osDisk.name' --output tsv 2>$null
+        if ($LASTEXITCODE -ne 0 -or ([string]$actualOsDiskName).Trim() -ne $osDiskName) {
+            throw "VM '$VmName' OS disk is '$actualOsDiskName', but vmExistingOsDiskId names '$osDiskName'. Fix vmExistingOsDiskId before migrating."
+        }
+        if ($PreviewOnly) {
+            Write-Needed "  Preview: VM '$VmName' would be deleted (OS disk '$osDiskName' detached and kept) and recreated in '$FoundationResourceGroupName'."
+        } else {
+            Write-Needed "  Deleting VM '$VmName' from '$WorkloadResourceGroupName' while keeping OS disk '$osDiskName'..."
+            $getOsDiskDeleteOption = { ([string](az vm show --ids $vmId --query 'storageProfile.osDisk.deleteOption' --output tsv 2>$null)).Trim() }
+            if ((& $getOsDiskDeleteOption) -ne 'Detach') {
+                az vm update --ids $vmId --set storageProfile.osDisk.deleteOption=Detach --output none
+                # The PUT can report failure (e.g. DiskEncryptionInternalError on a failed/evicted VM) after the model change was applied.
+                if ($LASTEXITCODE -ne 0 -and (& $getOsDiskDeleteOption) -ne 'Detach') {
+                    throw "Failed to set the OS disk delete option to Detach for VM '$VmName'."
+                }
+            }
+            az vm delete --ids $vmId --yes --output none
+            if ($LASTEXITCODE -ne 0) {
+                throw "Failed to delete VM '$VmName' from '$WorkloadResourceGroupName'."
+            }
+            Write-Exists "  Deleted VM '$VmName'; OS disk '$osDiskName' was kept."
+        }
+        $movedAny = $true
+    }
+    $shutdownScheduleId = "$workloadScope/providers/Microsoft.DevTestLab/schedules/shutdown-computevm-$VmName"
+    if (-not $PreviewOnly -and (& $testResource $shutdownScheduleId)) {
+        az resource delete --ids $shutdownScheduleId --output none
+    }
+    $legacyOsDiskId = "$workloadScope/providers/Microsoft.Compute/disks/$osDiskName"
+    if (& $testResource $legacyOsDiskId) {
+        & $moveResources @($legacyOsDiskId) "VM OS disk '$osDiskName'"
+        $movedAny = $true
+    }
+
+    # A moved Foundry account keeps stale project identities and loses its Agent Service capability
+    # host, so the account is deleted and purged here and Bicep recreates it in the foundation group.
+    $foundryId = "$workloadScope/providers/Microsoft.CognitiveServices/accounts/$FoundryAccountName"
+    if (& $testResource $foundryId) {
+        if ($PreviewOnly) {
+            Write-Needed "  Preview: Foundry account '$FoundryAccountName' and its projects would be deleted, purged, and recreated in '$FoundationResourceGroupName'."
+        } else {
+            $foundryProjectsJson = az rest --method get --url "https://management.azure.com$foundryId/projects?api-version=2025-04-01-preview" --output json 2>$null
+            if ($LASTEXITCODE -ne 0) {
+                throw "Unable to list projects on Foundry account '$FoundryAccountName'."
+            }
+            foreach ($foundryProject in @(($foundryProjectsJson | ConvertFrom-Json).value)) {
+                Write-Needed "  Deleting Foundry project '$($foundryProject.name)'..."
+                az rest --method delete --url "https://management.azure.com$($foundryProject.id)?api-version=2025-04-01-preview" --output none
+                if ($LASTEXITCODE -ne 0) {
+                    throw "Failed to delete Foundry project '$($foundryProject.name)'."
+                }
+                az resource wait --ids $foundryProject.id --deleted --timeout 600 2>$null
+            }
+            Write-Needed "  Deleting and purging Foundry account '$FoundryAccountName' from '$WorkloadResourceGroupName'..."
+            az cognitiveservices account delete --resource-group $WorkloadResourceGroupName --name $FoundryAccountName --output none
+            if ($LASTEXITCODE -ne 0) {
+                throw "Failed to delete Foundry account '$FoundryAccountName'."
+            }
+            $foundryLocation = az group show --name $WorkloadResourceGroupName --query location --output tsv
+            az cognitiveservices account purge --resource-group $WorkloadResourceGroupName --name $FoundryAccountName --location $foundryLocation --output none
+            if ($LASTEXITCODE -ne 0) {
+                throw "Failed to purge Foundry account '$FoundryAccountName'."
+            }
+            $foundryPrivateEndpointId = "$foundationScope/providers/Microsoft.Network/privateEndpoints/$FoundryAccountName-account-pe"
+            if (& $testResource $foundryPrivateEndpointId) {
+                az resource delete --ids $foundryPrivateEndpointId --output none
+            }
+            Write-Exists "  Deleted Foundry account '$FoundryAccountName'; Bicep recreates it in '$FoundationResourceGroupName'."
+        }
+        $movedAny = $true
+    }
+
+    if (-not $movedAny) {
+        Write-Exists '  No resources need to move.'
+    }
+}
+
 function Test-AzureResourceCurrent {
     param(
         [Parameter(Mandatory)] [string] $ResourceId,
@@ -1159,15 +1323,27 @@ function Test-EnterpriseDeploymentCurrent {
         [Parameter(Mandatory)] [string] $StorageAccountName,
         [Parameter(Mandatory)] [string] $KeyVaultName,
         [Parameter(Mandatory)] [string] $OpenAiAccountName,
+        [Parameter(Mandatory)] [string] $FoundryAccountName,
         [Parameter(Mandatory)] [string] $HubName,
         [Parameter(Mandatory)] [string] $ProjectName,
+        [Parameter(Mandatory)] [string] $AiSearchName,
         [Parameter(Mandatory)] [string] $SharedManagedIdentityName,
         [Parameter(Mandatory)] [bool] $AutomationEnabled,
         [Parameter(Mandatory)] [bool] $DeployStorage,
         [Parameter(Mandatory)] [bool] $DeployLogAnalytics,
         [Parameter(Mandatory)] [bool] $DeployAiFoundry,
         [Parameter(Mandatory)] [bool] $DeployVm,
+        [Parameter(Mandatory)] [bool] $DeployPostgres,
+        [Parameter(Mandatory)] [bool] $DeployStaticWebApp,
+        [Parameter(Mandatory)] [bool] $DeployCosmosDb,
+        [Parameter(Mandatory)] [bool] $DeployApiManagement,
+        [Parameter(Mandatory)] [bool] $DeployAppService,
         [Parameter(Mandatory)] [string] $AutomationAccountName,
+        [Parameter(Mandatory)] [string] $PostgresServerName,
+        [Parameter(Mandatory)] [string] $StaticWebAppName,
+        [Parameter(Mandatory)] [string] $CosmosDbAccountName,
+        [Parameter(Mandatory)] [string] $ApiManagementServiceName,
+        [Parameter(Mandatory)] [string] $AppServiceName,
         [object[]] $AutomationRunbooks = @(),
         [Parameter(Mandatory)] [bool] $VmStartScheduleEnabled,
         [Parameter(Mandatory)] [string] $VmStartScheduleName,
@@ -1179,9 +1355,10 @@ function Test-EnterpriseDeploymentCurrent {
         [Parameter(Mandatory)] [string] $RdpDeployerCleanupScheduleTimeZone,
         [Parameter(Mandatory)] [string] $VnetName,
         [Parameter(Mandatory)] [string] $VmName,
+        [string] $VmExistingOsDiskId = '',
+        [Parameter(Mandatory)] [string] $AppServicePlanName,
         [Parameter(Mandatory)] [string] $LogAnalyticsWorkspaceName,
         [Parameter(Mandatory)] [object[]] $ModelDeployments,
-        [Parameter(Mandatory)] [bool] $PrivateAiWorkspacesOnly,
         [Parameter(Mandatory)] [bool] $VmAutoShutdownEnabled,
         [Parameter(Mandatory)] [string] $ExpectedDesiredStateHash
     )
@@ -1249,34 +1426,79 @@ function Test-EnterpriseDeploymentCurrent {
         @{ Id = "$workloadScope/providers/Microsoft.OperationalInsights/workspaces/$LogAnalyticsWorkspaceName"; Description = "Log Analytics workspace '$LogAnalyticsWorkspaceName'" }
     )
     $aiFoundryResources = @(
-        @{ Id = "$workloadScope/providers/Microsoft.MachineLearningServices/workspaces/$HubName"; Description = "AI Hub '$HubName'" }
-        @{ Id = "$workloadScope/providers/Microsoft.MachineLearningServices/workspaces/$ProjectName"; Description = "AI Project '$ProjectName'" }
+        @{ Id = "$foundationScope/providers/Microsoft.CognitiveServices/accounts/$FoundryAccountName"; Description = "Foundry account '$FoundryAccountName'" }
+        @{ Id = "$foundationScope/providers/Microsoft.CognitiveServices/accounts/$FoundryAccountName/projects/$ProjectName"; Description = "Foundry project '$ProjectName'" }
+        @{ Id = "$foundationScope/providers/Microsoft.CognitiveServices/accounts/$FoundryAccountName/projects/$ProjectName/capabilityHosts/agents"; Description = "Foundry project capability host 'agents'" }
+        @{ Id = "$workloadScope/providers/Microsoft.Search/searchServices/$AiSearchName"; Description = "Azure AI Search service '$AiSearchName'" }
+        @{ Id = "$foundationScope/providers/Microsoft.Network/privateEndpoints/$AiSearchName-search-pe"; Description = "Azure AI Search private endpoint '$AiSearchName-search-pe'" }
+        @{ Id = "$foundationScope/providers/Microsoft.Network/virtualNetworks/$VnetName/subnets/agent"; Description = "Foundry Agent subnet 'agent'" }
+        @{ Id = "$foundationScope/providers/Microsoft.Network/privateDnsZones/privatelink.services.ai.azure.com"; Description = "Foundry services private DNS zone" }
+        @{ Id = "$foundationScope/providers/Microsoft.Network/privateDnsZones/privatelink.cognitiveservices.azure.com"; Description = "Cognitive Services private DNS zone" }
+        @{ Id = "$foundationScope/providers/Microsoft.Network/privateDnsZones/privatelink.search.windows.net"; Description = "Azure AI Search private DNS zone" }
     )
-    if ($PrivateAiWorkspacesOnly) {
-        $aiFoundryResources += @{ Id = "$foundationScope/providers/Microsoft.Network/privateEndpoints/$HubName-pe"; Description = "AI Hub private endpoint '$HubName-pe'" }
-    }
+    $aiFoundryResources += @{ Id = "$foundationScope/providers/Microsoft.Network/privateEndpoints/$FoundryAccountName-account-pe"; Description = "Foundry private endpoint '$FoundryAccountName-account-pe'" }
+    $staticWebAppResources = @(
+        @{ Id = "$workloadScope/providers/Microsoft.Web/staticSites/$StaticWebAppName"; Description = "Static Web App '$StaticWebAppName'" }
+    )
+    $postgresResources = @(
+        @{ Id = "$workloadScope/providers/Microsoft.DBforPostgreSQL/flexibleServers/$PostgresServerName"; Description = "PostgreSQL Flexible Server '$PostgresServerName'" }
+        @{ Id = "$foundationScope/providers/Microsoft.Network/virtualNetworks/$VnetName/subnets/postgres"; Description = "PostgreSQL delegated subnet 'postgres'" }
+        @{ Id = "$foundationScope/providers/Microsoft.Network/privateDnsZones/privatelink.postgres.database.azure.com"; Description = "PostgreSQL private DNS zone" }
+        @{ Id = "$foundationScope/providers/Microsoft.Network/privateDnsZones/privatelink.postgres.database.azure.com/virtualNetworkLinks/vnet-link"; Description = "PostgreSQL private DNS VNet link" }
+    )
+    $apiManagementResources = @(
+        @{ Id = "$foundationScope/providers/Microsoft.ApiManagement/service/$ApiManagementServiceName"; Description = "API Management service '$ApiManagementServiceName'" }
+    )
+    $appServiceResources = @(
+        @{ Id = "$foundationScope/providers/Microsoft.Web/serverFarms/$AppServicePlanName"; Description = "App Service plan '$AppServicePlanName'" }
+        @{ Id = "$foundationScope/providers/Microsoft.Web/sites/$AppServiceName"; Description = "App Service '$AppServiceName'" }
+    )
+    $cosmosDbResources = @(
+        @{ Id = "$workloadScope/providers/Microsoft.DocumentDB/databaseAccounts/$CosmosDbAccountName"; Description = "Cosmos DB account '$CosmosDbAccountName'" }
+        @{ Id = "$foundationScope/providers/Microsoft.Network/privateEndpoints/$CosmosDbAccountName-sql-pe"; Description = "Cosmos DB private endpoint '$CosmosDbAccountName-sql-pe'" }
+        @{ Id = "$foundationScope/providers/Microsoft.Network/privateDnsZones/privatelink.documents.azure.com"; Description = "Cosmos DB private DNS zone" }
+        @{ Id = "$foundationScope/providers/Microsoft.Network/privateDnsZones/privatelink.documents.azure.com/virtualNetworkLinks/vnet-link"; Description = "Cosmos DB private DNS VNet link" }
+    )
+    $vmOsDiskId = if ([string]::IsNullOrWhiteSpace($VmExistingOsDiskId)) { "$foundationScope/providers/Microsoft.Compute/disks/$VmName-osdisk" } else { $VmExistingOsDiskId }
     $vmResources = @(
-        @{ Id = "$workloadScope/providers/Microsoft.Compute/virtualMachines/$VmName"; Description = "Jumpbox VM '$VmName'" }
+        @{ Id = "$foundationScope/providers/Microsoft.Compute/virtualMachines/$VmName"; Description = "Jumpbox VM '$VmName'" }
         @{ Id = "$foundationScope/providers/Microsoft.Network/networkSecurityGroups/$VmName-nsg"; Description = "VM NSG '$VmName-nsg'" }
         @{ Id = "$foundationScope/providers/Microsoft.Network/networkInterfaces/$VmName-nic"; Description = "VM NIC '$VmName-nic'" }
         @{ Id = "$foundationScope/providers/Microsoft.Network/publicIPAddresses/$VmName-pip"; Description = "VM public IP '$VmName-pip'" }
-        @{ Id = "$workloadScope/providers/Microsoft.Compute/disks/$VmName-osdisk"; Description = "VM OS disk '$VmName-osdisk'" }
-        @{ Id = "$workloadScope/providers/Microsoft.Compute/virtualMachines/$VmName/extensions/AzureMonitorWindowsAgent"; Description = "Azure Monitor Agent VM extension" }
-        @{ Id = "$workloadScope/providers/Microsoft.Compute/virtualMachines/$VmName/extensions/IaaSAntimalware"; Description = "IaaS Antimalware VM extension" }
-        @{ Id = "$workloadScope/providers/Microsoft.Compute/virtualMachines/$VmName/extensions/AzureDiskEncryption"; Description = "Azure Disk Encryption VM extension" }
+        @{ Id = $vmOsDiskId; Description = "VM OS disk '$(($vmOsDiskId -split '/')[-1])'" }
+        @{ Id = "$foundationScope/providers/Microsoft.Compute/virtualMachines/$VmName/extensions/AzureMonitorWindowsAgent"; Description = "Azure Monitor Agent VM extension" }
+        @{ Id = "$foundationScope/providers/Microsoft.Compute/virtualMachines/$VmName/extensions/IaaSAntimalware"; Description = "IaaS Antimalware VM extension" }
     )
+    if ([string]::IsNullOrWhiteSpace($VmExistingOsDiskId)) {
+        $vmResources += @{ Id = "$foundationScope/providers/Microsoft.Compute/virtualMachines/$VmName/extensions/AzureDiskEncryption"; Description = "Azure Disk Encryption VM extension" }
+    }
     if ($VmAutoShutdownEnabled) {
-        $vmResources += @{ Id = "$workloadScope/providers/Microsoft.DevTestLab/schedules/shutdown-computevm-$VmName"; Description = "VM auto-shutdown schedule 'shutdown-computevm-$VmName'" }
+        $vmResources += @{ Id = "$foundationScope/providers/Microsoft.DevTestLab/schedules/shutdown-computevm-$VmName"; Description = "VM auto-shutdown schedule 'shutdown-computevm-$VmName'" }
     }
 
     # Resources that must be gone when their flag is false. Checking these keeps the no-op guard
     # honest: a disabled component that still exists forces the deployment path, which removes it.
     $absentChecks = @()
+    $absentChecks += @(
+        @{ Id = "$workloadScope/providers/Microsoft.MachineLearningServices/workspaces/$ProjectName"; Description = "legacy AI Project '$ProjectName'" }
+        @{ Id = "$workloadScope/providers/Microsoft.MachineLearningServices/workspaces/$HubName"; Description = "legacy AI Hub '$HubName'" }
+        @{ Id = "$foundationScope/providers/Microsoft.Network/privateEndpoints/$HubName-pe"; Description = "legacy AI Hub private endpoint '$HubName-pe'" }
+        @{ Id = "$workloadScope/providers/Microsoft.Compute/virtualMachines/$VmName"; Description = "workload-group copy of VM '$VmName'" }
+        @{ Id = "$workloadScope/providers/Microsoft.Automation/automationAccounts/$AutomationAccountName"; Description = "workload-group copy of Automation Account '$AutomationAccountName'" }
+        @{ Id = "$workloadScope/providers/Microsoft.ApiManagement/service/$ApiManagementServiceName"; Description = "workload-group copy of API Management '$ApiManagementServiceName'" }
+        @{ Id = "$workloadScope/providers/Microsoft.Web/serverFarms/$AppServicePlanName"; Description = "workload-group copy of App Service plan '$AppServicePlanName'" }
+        @{ Id = "$workloadScope/providers/Microsoft.CognitiveServices/accounts/$FoundryAccountName"; Description = "workload-group copy of Foundry account '$FoundryAccountName'" }
+    )
     foreach ($flagged in @(
         @{ Enabled = $DeployStorage; Resources = $storageResources }
         @{ Enabled = $DeployLogAnalytics; Resources = $logAnalyticsResources }
         @{ Enabled = $DeployAiFoundry; Resources = $aiFoundryResources }
         @{ Enabled = $DeployVm; Resources = $vmResources }
+        @{ Enabled = $DeployPostgres; Resources = $postgresResources }
+        @{ Enabled = $DeployStaticWebApp; Resources = $staticWebAppResources }
+        @{ Enabled = $DeployCosmosDb; Resources = $cosmosDbResources }
+        @{ Enabled = $DeployApiManagement; Resources = $apiManagementResources }
+        @{ Enabled = $DeployAppService; Resources = $appServiceResources }
     )) {
         if ($flagged.Enabled) {
             $resourceChecks += $flagged.Resources
@@ -1284,30 +1506,33 @@ function Test-EnterpriseDeploymentCurrent {
             $absentChecks += $flagged.Resources
         }
     }
+    if (-not $DeployAiFoundry) {
+        $absentChecks += @{ Id = "$foundationScope/providers/Microsoft.Network/virtualNetworks/$VnetName/subnets/agent-recovery"; Description = "Foundry Agent recovery subnet 'agent-recovery'" }
+    }
 
     if (-not $AutomationEnabled) {
-        $absentChecks += @{ Id = "$workloadScope/providers/Microsoft.Automation/automationAccounts/$AutomationAccountName"; Description = "Automation Account '$AutomationAccountName'" }
+        $absentChecks += @{ Id = "$foundationScope/providers/Microsoft.Automation/automationAccounts/$AutomationAccountName"; Description = "Automation Account '$AutomationAccountName'" }
     }
 
     foreach ($absentCheck in $absentChecks) {
         az resource show --ids $absentCheck.Id --output none 2>$null
         if ($LASTEXITCODE -eq 0) {
-            Write-Info "  Not current: $($absentCheck.Description) still exists but its deployment flag is false."
+            Write-Info "  Not current: $($absentCheck.Description) still exists but must be removed or moved."
             return $false
         }
     }
 
     if ($AutomationEnabled) {
-        $resourceChecks += @{ Id = "$workloadScope/providers/Microsoft.Automation/automationAccounts/$AutomationAccountName"; Description = "Automation Account '$AutomationAccountName'" }
+        $resourceChecks += @{ Id = "$foundationScope/providers/Microsoft.Automation/automationAccounts/$AutomationAccountName"; Description = "Automation Account '$AutomationAccountName'" }
         foreach ($runbook in $AutomationRunbooks) {
-            $resourceChecks += @{ Id = "$workloadScope/providers/Microsoft.Automation/automationAccounts/$AutomationAccountName/runbooks/$($runbook.name)"; Description = "Automation runbook '$($runbook.name)'" }
+            $resourceChecks += @{ Id = "$foundationScope/providers/Microsoft.Automation/automationAccounts/$AutomationAccountName/runbooks/$($runbook.name)"; Description = "Automation runbook '$($runbook.name)'" }
         }
         $jobSchedules = $null
         if ($VmStartScheduleEnabled) {
-            $resourceChecks += @{ Id = "$workloadScope/providers/Microsoft.Automation/automationAccounts/$AutomationAccountName/schedules/$VmStartScheduleName"; Description = "Automation schedule '$VmStartScheduleName'" }
+            $resourceChecks += @{ Id = "$foundationScope/providers/Microsoft.Automation/automationAccounts/$AutomationAccountName/schedules/$VmStartScheduleName"; Description = "Automation schedule '$VmStartScheduleName'" }
         }
         if ($RdpDeployerCleanupScheduleEnabled) {
-            $resourceChecks += @{ Id = "$workloadScope/providers/Microsoft.Automation/automationAccounts/$AutomationAccountName/schedules/$RdpDeployerCleanupScheduleName"; Description = "Automation schedule '$RdpDeployerCleanupScheduleName'" }
+            $resourceChecks += @{ Id = "$foundationScope/providers/Microsoft.Automation/automationAccounts/$AutomationAccountName/schedules/$RdpDeployerCleanupScheduleName"; Description = "Automation schedule '$RdpDeployerCleanupScheduleName'" }
         }
     }
 
@@ -1338,7 +1563,7 @@ function Test-EnterpriseDeploymentCurrent {
             }
         }
         foreach ($scheduleCheck in $scheduleChecks) {
-            $scheduleId = "$workloadScope/providers/Microsoft.Automation/automationAccounts/$AutomationAccountName/schedules/$($scheduleCheck.Name)"
+            $scheduleId = "$foundationScope/providers/Microsoft.Automation/automationAccounts/$AutomationAccountName/schedules/$($scheduleCheck.Name)"
             $scheduleUri = "https://management.azure.com${scheduleId}?api-version=2024-10-23"
             $scheduleJson = az rest --method get --url $scheduleUri --output json 2>$null
             if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($scheduleJson)) {
@@ -1377,7 +1602,7 @@ function Test-EnterpriseDeploymentCurrent {
         }
 
         foreach ($runbook in $AutomationRunbooks) {
-            $runbookId = "$workloadScope/providers/Microsoft.Automation/automationAccounts/$AutomationAccountName/runbooks/$($runbook.name)"
+            $runbookId = "$foundationScope/providers/Microsoft.Automation/automationAccounts/$AutomationAccountName/runbooks/$($runbook.name)"
             $deployedHash = az resource show --ids $runbookId --query tags.sourceHash --output tsv 2>$null
             $deployedHashValue = if ([string]::IsNullOrWhiteSpace($deployedHash)) { '' } else { $deployedHash.Trim() }
             if ($LASTEXITCODE -ne 0 -or $deployedHashValue -ne $runbook.sourceHash) {
@@ -1387,7 +1612,7 @@ function Test-EnterpriseDeploymentCurrent {
         }
 
         if ($VmStartScheduleEnabled) {
-            $jobSchedulesUri = "https://management.azure.com${workloadScope}/providers/Microsoft.Automation/automationAccounts/$AutomationAccountName/jobSchedules?api-version=2024-10-23"
+            $jobSchedulesUri = "https://management.azure.com${foundationScope}/providers/Microsoft.Automation/automationAccounts/$AutomationAccountName/jobSchedules?api-version=2024-10-23"
             $jobSchedulesJson = az rest --method get --url $jobSchedulesUri --output json 2>$null
             if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($jobSchedulesJson)) {
                 Write-Info '  Not current: unable to read Automation job schedules.'
@@ -1404,7 +1629,7 @@ function Test-EnterpriseDeploymentCurrent {
         }
         if ($RdpDeployerCleanupScheduleEnabled) {
             if (-not $jobSchedules) {
-                $jobSchedulesUri = "https://management.azure.com${workloadScope}/providers/Microsoft.Automation/automationAccounts/$AutomationAccountName/jobSchedules?api-version=2024-10-23"
+                $jobSchedulesUri = "https://management.azure.com${foundationScope}/providers/Microsoft.Automation/automationAccounts/$AutomationAccountName/jobSchedules?api-version=2024-10-23"
                 $jobSchedulesJson = az rest --method get --url $jobSchedulesUri --output json 2>$null
                 if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($jobSchedulesJson)) {
                     Write-Info '  Not current: unable to read Automation job schedules.'
@@ -1455,6 +1680,7 @@ $Location                        = $config.location
 $VnetAddressSpace                = $config.vnetAddressSpace
 $ServicesSubnetAddressPrefix     = $config.servicesSubnetAddressPrefix
 $VmSubnetAddressPrefix           = $config.vmSubnetAddressPrefix
+$AgentSubnetAddressPrefix        = $config.agentSubnetAddressPrefix
 $VmAcceleratedNetworking         = Convert-ToBoolean -Value $config.vmAcceleratedNetworking -Default $true
 $VmPublicIpDnsNameLabel          = [string]$config.vmPublicIpDnsNameLabel
 $WorkloadResourceGroupName           = $config.WorkloadResourceGroupName
@@ -1492,12 +1718,28 @@ $DeployAiFoundry                 = Convert-ToBoolean -Value $config.deployAiFoun
 $DeployVm                        = Convert-ToBoolean -Value $config.deployVm -Default $true
 $DeployAutomation                = $AutomationEnabled
 $DeployPostgres                  = Convert-ToBoolean -Value $config.deployPostgres -Default $true
+$DeployStaticWebApp              = Convert-ToBoolean -Value $config.deployStaticWebApp -Default $true
+$DeployCosmosDb                  = Convert-ToBoolean -Value $config.deployCosmosDb -Default $true
+$DeployApiManagement             = Convert-ToBoolean -Value $config.deployApiManagement -Default $true
+$DeployAppService                = Convert-ToBoolean -Value $config.deployAppService -Default $true
 $PostgresSubnetAddressPrefix     = $config.postgresSubnetAddressPrefix
 $PostgresAdminUsername           = $config.postgresAdminUsername
 $PostgresSkuName                 = $config.postgresSkuName
 $PostgresVersion                 = [string]$config.postgresVersion
 $PostgresStorageSizeGB           = [int]$config.postgresStorageSizeGB
 $PostgresBackupRetentionDays     = [int]$config.postgresBackupRetentionDays
+$StaticWebAppLocation            = $config.staticWebAppLocation
+$StaticWebAppSkuName             = $config.staticWebAppSkuName
+$CosmosDbDatabaseName            = $config.cosmosDbDatabaseName
+$CosmosDbContainerName           = $config.cosmosDbContainerName
+$CosmosDbPartitionKeyPath        = $config.cosmosDbPartitionKeyPath
+$CosmosDbThroughput              = [int]$config.cosmosDbThroughput
+$CosmosDbFreeTierEnabled         = Convert-ToBoolean -Value $config.cosmosDbFreeTierEnabled -Default $true
+$ApiManagementSkuName            = $config.apiManagementSkuName
+$AiSearchSkuName                 = $config.aiSearchSkuName
+$ApiManagementPublisherEmail     = $config.apiManagementPublisherEmail
+$ApiManagementPublisherName      = $config.apiManagementPublisherName
+$AppServiceSkuName               = $config.appServiceSkuName
 $AutomationRuntimeVersion        = $config.automationRuntimeVersion
 $AutomationAzVersion             = $config.automationAzVersion
 $VmStartScheduleEnabled          = Convert-ToBoolean -Value $config.vmStartScheduleEnabled -Default $true
@@ -1522,7 +1764,9 @@ $templateFile = Resolve-Path $templatePath
 $tempDir      = [System.IO.Path]::GetTempPath()
 $parameterFile = Join-Path $tempDir "enterprise-$EnvironmentSuffix.parameters.$PID.json"
 $hubName             = $config.hubName
+$foundryAccountName  = $config.foundryAccountName
 $projectName         = $config.projectName
+$aiSearchName        = $config.aiSearchName
 $storageAccountName  = $config.storageAccountName
 $containerName       = $config.containerName
 $keyVaultName        = $config.keyVaultName
@@ -1533,6 +1777,11 @@ $automationAccountName = $config.automationAccountName
 $vmStartScheduleName = $config.vmStartScheduleName
 $rdpDeployerCleanupScheduleName = $config.rdpDeployerCleanupScheduleName
 $postgresServerName  = $config.postgresServerName
+$staticWebAppName    = $config.staticWebAppName
+$cosmosDbAccountName = $config.cosmosDbAccountName
+$apiManagementServiceName = $config.apiManagementServiceName
+$appServicePlanName = $config.appServicePlanName
+$appServiceName = $config.appServiceName
 $automationRunbooks = if ($AutomationEnabled) {
     @(Get-AutomationRunbookDescriptors -ScriptRoot $scriptRoot)
 } else {
@@ -1541,7 +1790,7 @@ $automationRunbooks = if ($AutomationEnabled) {
 $vmStartScheduleStartTime = if ($AutomationEnabled -and $VmStartScheduleEnabled) {
     Get-AutomationScheduleStartTime `
         -SubscriptionId $subscriptionId `
-        -ResourceGroupName $WorkloadResourceGroupName `
+        -ResourceGroupName $FoundationResourceGroupName `
         -AutomationAccountName $automationAccountName `
         -ScheduleName $vmStartScheduleName `
         -Time $VmStartScheduleTime `
@@ -1552,7 +1801,7 @@ $vmStartScheduleStartTime = if ($AutomationEnabled -and $VmStartScheduleEnabled)
 $rdpDeployerCleanupScheduleStartTime = if ($AutomationEnabled -and $RdpDeployerCleanupScheduleEnabled) {
     Get-AutomationScheduleStartTime `
         -SubscriptionId $subscriptionId `
-        -ResourceGroupName $WorkloadResourceGroupName `
+        -ResourceGroupName $FoundationResourceGroupName `
         -AutomationAccountName $automationAccountName `
         -ScheduleName $rdpDeployerCleanupScheduleName `
         -Time $RdpDeployerCleanupScheduleTime `
@@ -1580,15 +1829,27 @@ if (-not $WhatIf -and -not $ForceRedeploy -and -not $ForceAppBootstrap) {
         -StorageAccountName $storageAccountName `
         -KeyVaultName $keyVaultName `
         -OpenAiAccountName $openAiAccountName `
+        -FoundryAccountName $foundryAccountName `
         -HubName $hubName `
         -ProjectName $projectName `
+        -AiSearchName $aiSearchName `
         -SharedManagedIdentityName $sharedManagedIdentityName `
         -AutomationEnabled $AutomationEnabled `
         -DeployStorage $DeployStorage `
         -DeployLogAnalytics $DeployLogAnalytics `
         -DeployAiFoundry $DeployAiFoundry `
         -DeployVm $DeployVm `
+        -DeployPostgres $DeployPostgres `
+        -DeployStaticWebApp $DeployStaticWebApp `
+        -DeployCosmosDb $DeployCosmosDb `
+        -DeployApiManagement $DeployApiManagement `
+        -DeployAppService $DeployAppService `
         -AutomationAccountName $automationAccountName `
+        -PostgresServerName $postgresServerName `
+        -StaticWebAppName $staticWebAppName `
+        -CosmosDbAccountName $cosmosDbAccountName `
+        -ApiManagementServiceName $apiManagementServiceName `
+        -AppServiceName $appServiceName `
         -AutomationRunbooks $automationRunbooks `
         -VmStartScheduleEnabled $VmStartScheduleEnabled `
         -VmStartScheduleName $vmStartScheduleName `
@@ -1600,9 +1861,10 @@ if (-not $WhatIf -and -not $ForceRedeploy -and -not $ForceAppBootstrap) {
         -RdpDeployerCleanupScheduleTimeZone $RdpDeployerCleanupScheduleTimeZone `
         -VnetName $VnetName `
         -VmName $vmName `
+        -VmExistingOsDiskId ([string]$config.vmExistingOsDiskId) `
+        -AppServicePlanName $appServicePlanName `
         -LogAnalyticsWorkspaceName $LogAnalyticsWorkspaceName `
         -ModelDeployments $ModelDeployments `
-        -PrivateAiWorkspacesOnly $PrivateAiWorkspacesOnly `
         -VmAutoShutdownEnabled $VmAutoShutdownEnabled `
         -ExpectedDesiredStateHash $desiredStateHash
 
@@ -1757,7 +2019,7 @@ $vmPasswordOrigin = 'supplied'
 
 if ([string]::IsNullOrWhiteSpace($VmAdminPassword)) {
     $vmWillBeCreatedOrRecreated = -not (Test-ExistingVmRetainsPassword `
-        -ResourceGroupName $WorkloadResourceGroupName `
+        -ResourceGroupName $FoundationResourceGroupName `
         -VmName $vmName `
         -UseSpot $VmUseSpot `
         -VmDeploymentEnabled $DeployVm)
@@ -1882,9 +2144,17 @@ $deploymentParameters = @{
         deployStorage = @{ value = $DeployStorage }
         deployLogAnalytics = @{ value = $DeployLogAnalytics }
         deployAiFoundry = @{ value = $DeployAiFoundry }
+        agentSubnetAddressPrefix = @{ value = $AgentSubnetAddressPrefix }
+        agentRecoverySubnetAddressPrefix = @{ value = [string]$config.agentRecoverySubnetAddressPrefix }
+        aiSearchSkuName = @{ value = $AiSearchSkuName }
         deployVm = @{ value = $DeployVm }
         deployAutomation = @{ value = $DeployAutomation }
         deployPostgres = @{ value = $DeployPostgres }
+        deployStaticWebApp = @{ value = $DeployStaticWebApp }
+        staticWebAppLocation = @{ value = $StaticWebAppLocation }
+        deployCosmosDb = @{ value = $DeployCosmosDb }
+        deployApiManagement = @{ value = $DeployApiManagement }
+        deployAppService = @{ value = $DeployAppService }
         postgresSubnetAddressPrefix = @{ value = $PostgresSubnetAddressPrefix }
         postgresSkuName = @{ value = $PostgresSkuName }
         postgresVersion = @{ value = $PostgresVersion }
@@ -1892,6 +2162,16 @@ $deploymentParameters = @{
         postgresBackupRetentionDays = @{ value = $PostgresBackupRetentionDays }
         postgresAdminUsername = @{ value = $PostgresAdminUsername }
         postgresAdminPassword = @{ value = $PostgresAdminPassword }
+        staticWebAppSkuName = @{ value = $StaticWebAppSkuName }
+        cosmosDbDatabaseName = @{ value = $CosmosDbDatabaseName }
+        cosmosDbContainerName = @{ value = $CosmosDbContainerName }
+        cosmosDbPartitionKeyPath = @{ value = $CosmosDbPartitionKeyPath }
+        cosmosDbThroughput = @{ value = $CosmosDbThroughput }
+        cosmosDbFreeTierEnabled = @{ value = $CosmosDbFreeTierEnabled }
+        apiManagementSkuName = @{ value = $ApiManagementSkuName }
+        apiManagementPublisherEmail = @{ value = $ApiManagementPublisherEmail }
+        apiManagementPublisherName = @{ value = $ApiManagementPublisherName }
+        appServiceSkuName = @{ value = $AppServiceSkuName }
         automationRuntimeVersion = @{ value = $AutomationRuntimeVersion }
         automationAzVersion = @{ value = $AutomationAzVersion }
         automationRunbooks = @{ value = @($automationRunbooks | ForEach-Object {
@@ -1926,6 +2206,17 @@ if (-not $WhatIf) {
     Write-Task 'Ensuring required resource groups exist...'
     az group create --name $WorkloadResourceGroupName --location $Location --output none
     az group create --name $FoundationResourceGroupName --location $Location --output none
+
+    Move-LegacyWorkloadResourcesToFoundation `
+        -SubscriptionId $subscriptionId `
+        -WorkloadResourceGroupName $WorkloadResourceGroupName `
+        -FoundationResourceGroupName $FoundationResourceGroupName `
+        -VmName $vmName `
+        -VmExistingOsDiskId ([string]$config.vmExistingOsDiskId) `
+        -AutomationAccountName $automationAccountName `
+        -ApiManagementServiceName $apiManagementServiceName `
+        -AppServicePlanName $appServicePlanName `
+        -FoundryAccountName $foundryAccountName
 
     Write-Task 'Checking for stale Azure ML workspaces from previous failed deployments...'
     $armHeaders = Get-AzureArmHeaders -SubscriptionId $subscriptionId
@@ -2093,7 +2384,7 @@ if ($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace($oaiExistsJson)) 
 
 Write-Task 'Checking for VM Spot priority conflict...'
 $vmResourceListJson = az resource list `
-    --resource-group $WorkloadResourceGroupName `
+    --resource-group $FoundationResourceGroupName `
     --resource-type 'Microsoft.Compute/virtualMachines' `
     --query "[?name=='$vmName'].id" `
     --output json 2>$null
@@ -2105,7 +2396,7 @@ if ($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace($vmResourceListJs
 
 if ($vmExists) {
     $existingPriorityTsv = az resource show `
-        --resource-group $WorkloadResourceGroupName `
+        --resource-group $FoundationResourceGroupName `
         --name $vmName `
         --resource-type 'Microsoft.Compute/virtualMachines' `
         --query 'properties.priority' `
@@ -2121,7 +2412,7 @@ if ($vmExists) {
             $changeDesc = if ($VmUseSpot) { 'Regular -> Spot' } else { 'Spot -> Regular' }
             Write-Needed "  Priority change detected ($changeDesc) — deleting VM '$vmName' and its OS disk so Bicep can recreate with correct priority..."
             az vm delete `
-                --resource-group $WorkloadResourceGroupName `
+                --resource-group $FoundationResourceGroupName `
                 --name $vmName `
                 --yes `
                 --output none
@@ -2132,14 +2423,14 @@ if ($vmExists) {
             }
             $osDiskName = "$vmName-osdisk"
             $diskExists = az disk show `
-                --resource-group $WorkloadResourceGroupName `
+                --resource-group $FoundationResourceGroupName `
                 --name $osDiskName `
                 --query id `
                 --output tsv 2>$null
             if ($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace($diskExists)) {
                 Write-Needed "  Deleting orphaned OS disk '$osDiskName'..."
                 az disk delete `
-                    --resource-group $WorkloadResourceGroupName `
+                    --resource-group $FoundationResourceGroupName `
                     --name $osDiskName `
                     --yes `
                     --output none
@@ -2182,7 +2473,7 @@ $removeResourceById = {
     if ($LASTEXITCODE -eq 0) {
         Write-Exists "  Removed $Description."
     } else {
-        Write-Info "  Warning: could not remove $Description. Remove it manually and rerun."
+        throw "Failed to remove $Description."
     }
     return $true
 }
@@ -2194,21 +2485,53 @@ if (-not $DeployAutomation) {
     # Runbooks, schedules, and job schedules are children of the Automation Account and are
     # removed with it. The shared managed identity is not removed here: Hub, Project, and the VM
     # continue to use it even when Automation is disabled.
-    & $removeResourceById "$workloadScopeId/providers/Microsoft.Automation/automationAccounts/$automationAccountName" "Automation Account '$automationAccountName'" | Out-Null
+    & $removeResourceById "$foundationScopeId/providers/Microsoft.Automation/automationAccounts/$automationAccountName" "Automation Account '$automationAccountName'" | Out-Null
 }
 
 if (-not $DeployVm) {
     # Order matters: the schedule and VM must go before the NIC, and the NIC before the public IP
     # and NSG. The OS disk survives 'az vm delete', so it is removed explicitly.
-    & $removeResourceById "$workloadScopeId/providers/Microsoft.DevTestLab/schedules/shutdown-computevm-$vmName" "VM auto-shutdown schedule for '$vmName'" | Out-Null
-    & $removeResourceById "$workloadScopeId/providers/Microsoft.Compute/virtualMachines/$vmName" "jumpbox VM '$vmName'" | Out-Null
-    & $removeResourceById "$workloadScopeId/providers/Microsoft.Compute/disks/$vmName-osdisk" "VM OS disk '$vmName-osdisk'" | Out-Null
+    & $removeResourceById "$foundationScopeId/providers/Microsoft.DevTestLab/schedules/shutdown-computevm-$vmName" "VM auto-shutdown schedule for '$vmName'" | Out-Null
+    & $removeResourceById "$foundationScopeId/providers/Microsoft.Compute/virtualMachines/$vmName" "jumpbox VM '$vmName'" | Out-Null
+    & $removeResourceById "$foundationScopeId/providers/Microsoft.Compute/disks/$vmName-osdisk" "VM OS disk '$vmName-osdisk'" | Out-Null
     & $removeResourceById "$foundationScopeId/providers/Microsoft.Network/networkInterfaces/$vmName-nic" "VM NIC '$vmName-nic'" | Out-Null
     & $removeResourceById "$foundationScopeId/providers/Microsoft.Network/publicIPAddresses/$vmName-pip" "VM public IP '$vmName-pip'" | Out-Null
     & $removeResourceById "$foundationScopeId/providers/Microsoft.Network/networkSecurityGroups/$vmName-nsg" "VM NSG '$vmName-nsg'" | Out-Null
 }
 
 if (-not $DeployAiFoundry) {
+    & $removeResourceById "$foundationScopeId/providers/Microsoft.Network/privateEndpoints/$foundryAccountName-account-pe" "Foundry private endpoint '$foundryAccountName-account-pe'" | Out-Null
+    & $removeResourceById "$foundationScopeId/providers/Microsoft.Network/privateEndpoints/$aiSearchName-search-pe" "Azure AI Search private endpoint '$aiSearchName-search-pe'" | Out-Null
+    & $removeResourceById "$foundationScopeId/providers/Microsoft.CognitiveServices/accounts/$foundryAccountName/projects/$projectName/capabilityHosts/agents" "Foundry capability host 'agents'" | Out-Null
+    & $removeResourceById "$foundationScopeId/providers/Microsoft.CognitiveServices/accounts/$foundryAccountName/projects/$projectName" "Foundry project '$projectName'" | Out-Null
+
+    $foundryAccountJson = az cognitiveservices account show --resource-group $FoundationResourceGroupName --name $foundryAccountName --output json 2>$null
+    if ($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace($foundryAccountJson)) {
+        $foundryLocation = [string](($foundryAccountJson | ConvertFrom-Json).location)
+        Write-Needed "  Removing Foundry account '$foundryAccountName' (deployment flag is false)..."
+        az cognitiveservices account delete --resource-group $FoundationResourceGroupName --name $foundryAccountName --output none
+        if ($LASTEXITCODE -ne 0) {
+            throw "Failed to delete Foundry account '$foundryAccountName'."
+        }
+        az cognitiveservices account purge --resource-group $FoundationResourceGroupName --name $foundryAccountName --location $foundryLocation --output none
+        if ($LASTEXITCODE -ne 0) {
+            throw "Failed to purge Foundry account '$foundryAccountName'."
+        }
+        Write-Exists "  Removed and purged Foundry account '$foundryAccountName'."
+    }
+    & $removeResourceById "$workloadScopeId/providers/Microsoft.Search/searchServices/$aiSearchName" "Azure AI Search service '$aiSearchName'" | Out-Null
+
+    foreach ($dnsZoneName in @(
+        'privatelink.services.ai.azure.com'
+        'privatelink.cognitiveservices.azure.com'
+        'privatelink.search.windows.net'
+    )) {
+        & $removeResourceById "$foundationScopeId/providers/Microsoft.Network/privateDnsZones/$dnsZoneName/virtualNetworkLinks/vnet-link" "private DNS VNet link for '$dnsZoneName'" | Out-Null
+        & $removeResourceById "$foundationScopeId/providers/Microsoft.Network/privateDnsZones/$dnsZoneName" "private DNS zone '$dnsZoneName'" | Out-Null
+    }
+    & $removeResourceById "$foundationScopeId/providers/Microsoft.Network/virtualNetworks/$VnetName/subnets/agent-recovery" "Foundry Agent recovery subnet 'agent-recovery'" | Out-Null
+    & $removeResourceById "$foundationScopeId/providers/Microsoft.Network/virtualNetworks/$VnetName/subnets/agent" "Foundry Agent subnet 'agent'" | Out-Null
+
     # The project is a child workspace of the hub, so it must be deleted first.
     foreach ($workspaceToRemove in @($projectName, $hubName)) {
         $workspaceUri = "https://management.azure.com$workloadScopeId/providers/Microsoft.MachineLearningServices/workspaces/$workspaceToRemove`?api-version=$MlApiVersion&forcePurge=true"
@@ -2224,6 +2547,33 @@ if (-not $DeployAiFoundry) {
         }
     }
     & $removeResourceById "$foundationScopeId/providers/Microsoft.Network/privateEndpoints/$hubName-pe" "AI Hub private endpoint '$hubName-pe'" | Out-Null
+}
+
+if (-not $DeployStaticWebApp) {
+    & $removeResourceById "$workloadScopeId/providers/Microsoft.Web/staticSites/$staticWebAppName" "Static Web App '$staticWebAppName'" | Out-Null
+}
+
+if (-not $DeployCosmosDb) {
+    & $removeResourceById "$foundationScopeId/providers/Microsoft.Network/privateEndpoints/$cosmosDbAccountName-sql-pe" "Cosmos DB private endpoint '$cosmosDbAccountName-sql-pe'" | Out-Null
+    & $removeResourceById "$workloadScopeId/providers/Microsoft.DocumentDB/databaseAccounts/$cosmosDbAccountName" "Cosmos DB account '$cosmosDbAccountName'" | Out-Null
+    & $removeResourceById "$foundationScopeId/providers/Microsoft.Network/privateDnsZones/privatelink.documents.azure.com/virtualNetworkLinks/vnet-link" "Cosmos DB private DNS VNet link" | Out-Null
+    & $removeResourceById "$foundationScopeId/providers/Microsoft.Network/privateDnsZones/privatelink.documents.azure.com" "Cosmos DB private DNS zone" | Out-Null
+}
+
+if (-not $DeployApiManagement) {
+    & $removeResourceById "$foundationScopeId/providers/Microsoft.ApiManagement/service/$apiManagementServiceName" "API Management service '$apiManagementServiceName'" | Out-Null
+}
+
+if (-not $DeployAppService) {
+    & $removeResourceById "$foundationScopeId/providers/Microsoft.Web/sites/$appServiceName" "App Service '$appServiceName'" | Out-Null
+    & $removeResourceById "$foundationScopeId/providers/Microsoft.Web/serverFarms/$appServicePlanName" "App Service plan '$appServicePlanName'" | Out-Null
+}
+
+if (-not $DeployPostgres) {
+    & $removeResourceById "$workloadScopeId/providers/Microsoft.DBforPostgreSQL/flexibleServers/$postgresServerName" "PostgreSQL Flexible Server '$postgresServerName'" | Out-Null
+    & $removeResourceById "$foundationScopeId/providers/Microsoft.Network/privateDnsZones/privatelink.postgres.database.azure.com/virtualNetworkLinks/vnet-link" "PostgreSQL private DNS VNet link" | Out-Null
+    & $removeResourceById "$foundationScopeId/providers/Microsoft.Network/privateDnsZones/privatelink.postgres.database.azure.com" "PostgreSQL private DNS zone" | Out-Null
+    & $removeResourceById "$foundationScopeId/providers/Microsoft.Network/virtualNetworks/$VnetName/subnets/postgres" "PostgreSQL delegated subnet 'postgres'" | Out-Null
 }
 
 if (-not $DeployStorage) {
@@ -2255,80 +2605,35 @@ if (-not $DeployLogAnalytics) {
     & $removeResourceById "$workloadScopeId/providers/Microsoft.OperationalInsights/workspaces/$LogAnalyticsWorkspaceName" "Log Analytics workspace '$LogAnalyticsWorkspaceName'" | Out-Null
 }
 
-# NOTE: the shared managed identity's data-plane roles (Storage Blob Data Contributor, Key Vault
-# Secrets User, Cognitive Services OpenAI User) are intentionally NOT stripped and recreated here.
-# managedidentityroles.bicep names each assignment deterministically from the (fixed) resource
-# group, target resource, principal ID, and role GUID, so a normal rerun leaves an already-correct
-# assignment untouched — deleting and recreating it on every run only reintroduces an RBAC
-# propagation race (the identity briefly loses the role between the delete and the redeploy).
-# This block only ever needs to run once, by hand, after a role-assignment naming scheme changes.
-
-    # Actor role assignments are owned solely by actorroles.bicep / networkroles.bicep. Earlier
-    # revisions created some of the same role/principal/scope pairs from other modules with a
-    # different deterministic name, which makes ARM fail with RoleAssignmentExists. Remove any
-    # existing assignment for a managed role at (or below) the environment resource groups so the
-    # deployment can recreate it under the name the templates own.
-    $actorRoleGuids = @(
-        '00482a5a-887f-4fb3-b363-3b7fe8e74483'  # Key Vault Administrator
-        'a001fd3d-188f-4b5d-821b-7da978bf7442'  # Cognitive Services OpenAI Contributor
-        '25fbc0a9-bd7c-42a3-aa1a-3b75d497ee68'  # Cognitive Services Contributor
-        'b7e6dc6d-f1e8-4753-8033-0f276bb0955b'  # Storage Blob Data Owner
-        '17d1049b-9a84-46fb-8f53-869881c3d3ab'  # Storage Account Contributor
-        'b78c5d69-af96-48a3-bf8d-a8b4d589de94'  # Azure AI Administrator
-        '1c0163c0-47e6-4577-8991-ea5c82e286e4'  # Virtual Machine Administrator Login
-        '92aaf0da-9dab-42b6-94a3-d43ce8d16293'  # Log Analytics Contributor
-        '749f88d5-cbae-40b8-bcfc-e573ddc772fa'  # Monitoring Contributor
-        '4633458b-17de-408a-b874-0445c86b69e6'  # Key Vault Secrets User
-        'b86a8fe4-44ce-4948-aee5-eccb2c155cd7'  # Key Vault Secrets Officer
-        '21090545-7ca7-4776-b22c-e363652d74d2'  # Key Vault Reader
-        '5e0bd9bd-7b93-4f28-af87-19fc36ad61bd'  # Cognitive Services OpenAI User
-        'a97b65f3-24c7-4388-baec-2e87135dc908'  # Cognitive Services User
-        'ba92f5b4-2d11-453d-a403-e96b0029c9fe'  # Storage Blob Data Contributor
-        '64702f94-c441-49e6-a78b-ef80e0188fee'  # Azure AI Developer
-        'f6c7c914-8db3-469d-8ca1-694a8f32e121'  # AzureML Data Scientist
-        'fb879df8-f326-4884-b1cf-06f3ad86be52'  # Virtual Machine User Login
-        '73c42c96-874c-492b-b04d-ab87d138a893'  # Log Analytics Reader
-        '43d0d8ad-25c7-4714-9337-8ba259a9fe05'  # Monitoring Reader
-        'b24988ac-6180-42a0-ab88-20f7382dd24c'  # Contributor
-        '18d7d88d-d35e-4fb5-a5c3-7773c20a72d9'  # User Access Administrator
-        'acdd72a7-3385-48ef-bd42-f606fba81ae7'  # Reader
-    )
-    $managedScopePrefixes = @($workloadScopeId.ToLowerInvariant(), $foundationScopeId.ToLowerInvariant())
-    $actorPrincipalIds = @(@($AdminActors + $UserActors) |
-        ForEach-Object { [string]$_.objectId } |
-        Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
-        Select-Object -Unique)
-
-    foreach ($actorPrincipalId in $actorPrincipalIds) {
-        $actorAssignmentsJson = az role assignment list `
-            --all `
-            --assignee $actorPrincipalId `
-            --query '[].{id:id, scope:scope, role:roleDefinitionId}' `
-            --output json 2>$null
-        if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($actorAssignmentsJson)) {
-            continue
-        }
-
-        $staleActorAssignments = @(@($actorAssignmentsJson | ConvertFrom-Json) | Where-Object {
-            $assignmentScope = ([string]$_.scope).ToLowerInvariant()
-            $assignmentRoleGuid = ([string]$_.role -split '/')[-1]
-            ($managedScopePrefixes | Where-Object { $assignmentScope.StartsWith($_) }) -and
-            ($actorRoleGuids -contains $assignmentRoleGuid)
-        })
-
-        if ($staleActorAssignments.Count -eq 0) {
-            continue
-        }
-
-        Write-Task "Removing stale role assignments for actor '$actorPrincipalId' before deployment..."
-        foreach ($staleActorAssignment in $staleActorAssignments) {
-            az role assignment delete --ids $staleActorAssignment.id --output none
-            if ($LASTEXITCODE -eq 0) {
-                Write-Exists "  Removed role '$((([string]$staleActorAssignment.role) -split '/')[-1])' at '$($staleActorAssignment.scope)'."
+if ($DeployAiFoundry) {
+    $foundryPrivateEndpointName = "$foundryAccountName-account-pe"
+    $foundryPrivateEndpointJson = az network private-endpoint show --resource-group $FoundationResourceGroupName --name $foundryPrivateEndpointName --output json 2>$null
+    if ($LASTEXITCODE -eq 0) {
+        $foundryPrivateEndpoint = $foundryPrivateEndpointJson | ConvertFrom-Json
+        $disconnectedConnections = @((@($foundryPrivateEndpoint.privateLinkServiceConnections) + @($foundryPrivateEndpoint.manualPrivateLinkServiceConnections)) |
+            Where-Object { $_.privateLinkServiceConnectionState.status -eq 'Disconnected' })
+        if ($disconnectedConnections.Count -gt 0) {
+            Write-Needed "  Removing disconnected Foundry private endpoint '$foundryPrivateEndpointName' so Bicep can recreate it..."
+            az network private-endpoint delete --resource-group $FoundationResourceGroupName --name $foundryPrivateEndpointName --output none
+            if ($LASTEXITCODE -ne 0) {
+                throw "Failed to remove disconnected Foundry private endpoint '$foundryPrivateEndpointName'."
             }
         }
     }
+}
+
 } else {
+    Move-LegacyWorkloadResourcesToFoundation `
+        -SubscriptionId $subscriptionId `
+        -WorkloadResourceGroupName $WorkloadResourceGroupName `
+        -FoundationResourceGroupName $FoundationResourceGroupName `
+        -VmName $vmName `
+        -VmExistingOsDiskId ([string]$config.vmExistingOsDiskId) `
+        -AutomationAccountName $automationAccountName `
+        -ApiManagementServiceName $apiManagementServiceName `
+        -AppServicePlanName $appServicePlanName `
+        -FoundryAccountName $foundryAccountName `
+        -PreviewOnly
     Write-Info 'Preview mode: skipping resource-group creation and destructive stale-resource cleanup.'
 }
 
@@ -2382,6 +2687,91 @@ if ($null -eq $deploymentOutputs) {
     Write-Info 'Warning: could not read deployment outputs. Falling back to derived defaults.'
 }
 
+if ($DeployAiFoundry) {
+    Write-Task 'Validating the new Microsoft Foundry deployment before legacy workspace removal...'
+    $foundryAccountState = az cognitiveservices account show `
+        --resource-group $FoundationResourceGroupName `
+        --name $foundryAccountName `
+        --query properties.provisioningState `
+        --output tsv 2>$null
+    if ($LASTEXITCODE -ne 0 -or ([string]$foundryAccountState).Trim() -ne 'Succeeded') {
+        throw "Foundry account '$foundryAccountName' is not ready. Legacy AI Hub and Project were preserved."
+    }
+
+    $foundryProjectId = "$foundationScopeId/providers/Microsoft.CognitiveServices/accounts/$foundryAccountName/projects/$projectName"
+    $foundryProjectState = az resource show `
+        --ids $foundryProjectId `
+        --api-version 2025-04-01-preview `
+        --query properties.provisioningState `
+        --output tsv 2>$null
+    if ($LASTEXITCODE -ne 0 -or ([string]$foundryProjectState).Trim() -ne 'Succeeded') {
+        throw "Foundry project '$projectName' is not ready. Legacy AI Hub and Project were preserved."
+    }
+
+    $capabilityHostState = az resource show `
+        --ids "$foundryProjectId/capabilityHosts/agents" `
+        --api-version 2025-04-01-preview `
+        --query properties.provisioningState `
+        --output tsv 2>$null
+    if ($LASTEXITCODE -ne 0 -or ([string]$capabilityHostState).Trim() -ne 'Succeeded') {
+        throw "Foundry Agent capability host is not ready. Legacy AI Hub and Project were preserved."
+    }
+
+    foreach ($modelDeployment in $ModelDeployments) {
+        $modelState = az cognitiveservices account deployment show `
+            --resource-group $FoundationResourceGroupName `
+            --name $foundryAccountName `
+            --deployment-name $modelDeployment.deploymentName `
+            --query properties.provisioningState `
+            --output tsv 2>$null
+        if ($LASTEXITCODE -ne 0 -or ([string]$modelState).Trim() -ne 'Succeeded') {
+            throw "Foundry model deployment '$($modelDeployment.deploymentName)' is not ready. Legacy AI Hub and Project were preserved."
+        }
+    }
+
+    Write-Exists 'New Microsoft Foundry account, project, Agent capability host, and model deployments are ready.'
+    Write-Task 'Removing legacy AI Hub and Project after successful Foundry cutover...'
+    foreach ($legacyWorkspaceName in @($projectName, $hubName)) {
+        $legacyWorkspaceUri = "https://management.azure.com$workloadScopeId/providers/Microsoft.MachineLearningServices/workspaces/$legacyWorkspaceName`?api-version=$MlApiVersion&forcePurge=true"
+        $legacyWorkspaceExisted = $true
+        try {
+            Invoke-RestMethod -Method DELETE -Uri $legacyWorkspaceUri -Headers $armHeaders -ErrorAction Stop | Out-Null
+            Write-Info "  Deletion accepted for legacy AI workspace '$legacyWorkspaceName'."
+        } catch {
+            $legacyDeleteStatus = $null
+            if ($_.Exception.Response) { $legacyDeleteStatus = [int]$_.Exception.Response.StatusCode }
+            if ($legacyDeleteStatus -ne 404) {
+                throw "Could not remove legacy AI workspace '$legacyWorkspaceName': $($_.Exception.Message)"
+            }
+            $legacyWorkspaceExisted = $false
+            Write-Exists "  Legacy AI workspace '$legacyWorkspaceName' is already absent."
+        }
+
+        if ($legacyWorkspaceExisted) {
+            $legacyDeleteDeadline = [DateTimeOffset]::UtcNow.AddMinutes(10)
+            while ([DateTimeOffset]::UtcNow -lt $legacyDeleteDeadline) {
+                try {
+                    Invoke-RestMethod -Method GET -Uri $legacyWorkspaceUri -Headers $armHeaders -ErrorAction Stop | Out-Null
+                    Start-Sleep -Seconds 10
+                } catch {
+                    $legacyGetStatus = $null
+                    if ($_.Exception.Response) { $legacyGetStatus = [int]$_.Exception.Response.StatusCode }
+                    if ($legacyGetStatus -eq 404) {
+                        Write-Exists "  Legacy AI workspace '$legacyWorkspaceName' is deleted."
+                        $legacyWorkspaceExisted = $false
+                        break
+                    }
+                    throw "Could not confirm deletion of legacy AI workspace '$legacyWorkspaceName': $($_.Exception.Message)"
+                }
+            }
+            if ($legacyWorkspaceExisted) {
+                throw "Timed out waiting for legacy AI workspace '$legacyWorkspaceName' to delete."
+            }
+        }
+    }
+    & $removeResourceById "$foundationScopeId/providers/Microsoft.Network/privateEndpoints/$hubName-pe" "legacy AI Hub private endpoint '$hubName-pe'" | Out-Null
+}
+
 if ($AutomationEnabled) {
     $automationIdentityClientId = (Get-DeploymentOutputValue -Outputs $deploymentOutputs -Name 'sharedManagedIdentityClientId').Trim()
     if ([string]::IsNullOrWhiteSpace($automationIdentityClientId)) {
@@ -2402,7 +2792,7 @@ if ($AutomationEnabled) {
 
     Publish-AutomationRunbooks `
         -SubscriptionId $subscriptionId `
-        -ResourceGroupName $WorkloadResourceGroupName `
+        -ResourceGroupName $FoundationResourceGroupName `
         -AutomationAccountName $automationAccountName `
         -Runbooks $automationRunbooks
 
@@ -2413,14 +2803,14 @@ if ($AutomationEnabled) {
         }
         Set-AutomationJobSchedule `
             -SubscriptionId $subscriptionId `
-            -ResourceGroupName $WorkloadResourceGroupName `
+            -ResourceGroupName $FoundationResourceGroupName `
             -AutomationAccountName $automationAccountName `
             -JobScheduleName $automationJobScheduleName `
             -ScheduleName $vmStartScheduleName `
             -RunbookName 'schedule-vm-start' `
             -RunbookParameters @{
                 automationIdentityClientId = $automationIdentityClientId
-                resourceGroupName = $WorkloadResourceGroupName
+                resourceGroupName = $FoundationResourceGroupName
                 subscriptionId = $subscriptionId
                 vmName = $vmName
             }
@@ -2432,7 +2822,7 @@ if ($AutomationEnabled) {
         }
         Set-AutomationJobSchedule `
             -SubscriptionId $subscriptionId `
-            -ResourceGroupName $WorkloadResourceGroupName `
+            -ResourceGroupName $FoundationResourceGroupName `
             -AutomationAccountName $automationAccountName `
             -JobScheduleName $rdpCleanupJobScheduleName `
             -ScheduleName $rdpDeployerCleanupScheduleName `
@@ -2754,18 +3144,30 @@ $contentIsCurrent = Test-KeyVaultSecretValueCurrent `
     -SecretName 'chatapp-content-hash' `
     -SecretValue $localContentHash
 
+$bootstrapIsPresent = $false
+if ($DeployVm -and $contentIsCurrent -and -not $ForceAppBootstrap) {
+    $bootstrapProbe = az vm run-command invoke `
+        --resource-group $FoundationResourceGroupName `
+        --name $vmName `
+        --command-id RunPowerShellScript `
+        --scripts "if (Test-Path -LiteralPath 'C:\ChatApp\launch-chat.bat') { Write-Output 'CHATAPP_BOOTSTRAPPED' }" `
+        --query 'value[0].message' `
+        --output tsv 2>$null
+    $bootstrapIsPresent = $LASTEXITCODE -eq 0 -and $bootstrapProbe -match 'CHATAPP_BOOTSTRAPPED'
+}
+
 if (-not $DeployVm) {
     Write-Info 'VM deployment is disabled (deployVm: false) — skipping application bootstrap.'
     Remove-Item $firstRunFile -Force -ErrorAction SilentlyContinue
-} elseif ($contentIsCurrent -and -not $ForceAppBootstrap) {
+} elseif ($contentIsCurrent -and $bootstrapIsPresent -and -not $ForceAppBootstrap) {
     Write-Exists 'App files unchanged since last deploy — skipping VM bootstrap.'
     Remove-Item $firstRunFile -Force -ErrorAction SilentlyContinue
 } else {
-    Write-Needed 'App files changed (or first deploy) — transferring through Azure VM Run Command...'
+    Write-Needed 'App files changed or VM bootstrap missing — transferring through Azure VM Run Command...'
     Write-Info "[App package generation] completed in $($phaseWatch.Elapsed.ToString('mm\:ss'))"
     $phaseWatch.Restart()
 
-    $vmReady = Ensure-VmRunning -ResourceGroupName $WorkloadResourceGroupName -VmName $vmName
+    $vmReady = Ensure-VmRunning -ResourceGroupName $FoundationResourceGroupName -VmName $vmName
     if (-not $vmReady) {
         Remove-Item $firstRunFile -Force -ErrorAction SilentlyContinue
         Write-Error '  Unable to guarantee the VM is running; cannot bootstrap the application.'
@@ -2780,7 +3182,7 @@ if (-not $DeployVm) {
         $setupScript
     )
     $bootstrapSucceeded = Invoke-VmBootstrapPackage `
-        -ResourceGroupName $WorkloadResourceGroupName `
+        -ResourceGroupName $FoundationResourceGroupName `
         -VmName $vmName `
         -FilePaths $bootstrapFiles `
         -GuestTimeZone $VmGuestTimeZone
@@ -2819,7 +3221,7 @@ if ($skipVmPasswordApply) {
     }
 
     $vmReady = Ensure-VmRunning `
-        -ResourceGroupName $WorkloadResourceGroupName `
+        -ResourceGroupName $FoundationResourceGroupName `
         -VmName $vmName
 
     if (-not $vmReady) {
@@ -2829,7 +3231,7 @@ if ($skipVmPasswordApply) {
 
     Write-Info '  Applying the same password supplied to the VM deployment and stored in Key Vault.'
     $resetSucceeded = Update-VmUserPassword `
-        -ResourceGroupName $WorkloadResourceGroupName `
+        -ResourceGroupName $FoundationResourceGroupName `
         -VmName $vmName `
         -Username $VmAdminUsername `
         -Password $VmAdminPassword

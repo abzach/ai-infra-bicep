@@ -2,7 +2,7 @@
 
 ## Repository purpose
 
-This repository deploys a private Azure AI Foundry learning environment with standalone Bicep and PowerShell. It includes Azure OpenAI model deployments, AI Hub and Project workspaces, private networking, Key Vault, Storage, a free-tier-sized PostgreSQL Flexible Server, Log Analytics, managed identities, and a Windows jumpbox that hosts the Python chat application.
+This repository deploys a private Microsoft Foundry learning environment with standalone Bicep and PowerShell. It includes an `AIServices` Foundry account/project with Standard Agent Service, private Azure AI Search, Azure OpenAI model deployments, private networking, Key Vault, Storage, PostgreSQL Flexible Server, Azure Static Web Apps, Cosmos DB, API Management, Log Analytics, managed identities, and a Windows jumpbox that hosts the Python chat application.
 
 ## Source map
 
@@ -11,7 +11,8 @@ This repository deploys a private Azure AI Foundry learning environment with sta
 - `variables/core.yaml` contains shared non-SKU defaults.
 - `variables/dev.yaml` and `variables/uat.yaml` contain environment naming, identity, SKU, capacity, RDP allowlist, and pipeline values.
 - `scripts/config.ps1` merges and validates YAML configuration, including the environment-owned Azure subscription ID used for CLI context selection and the subscription-derived name suffix.
-- `scripts/deploy.ps1` non-interactively updates Bicep, validates Azure context against the configured environment subscription, exits early for already-current environments, deploys Bicep when needed, publishes runbooks before linking schedules, writes Key Vault secrets through ARM, bootstraps the VM through Run Command, applies the VM password, and emits a timing summary for performance tuning. Resource provider registration and the Bicep CLI latest-version check are cached per subscription in ignored `.local/cache/subscription-state.json` (see `scripts/README.md`) to skip redundant checks on reruns.
+- `scripts/deploy.ps1` non-interactively updates Bicep, validates Azure context against the configured environment subscription, exits early for already-current environments, removes disabled optional components in dependency order, migrates legacy VM, Automation, API Management, and App Service resources into the foundation group and recreates legacy Foundry accounts rather than moving them, preserves deterministic actor RBAC assignments on normal redeployments, deploys Bicep when needed, publishes runbooks before linking schedules, writes Key Vault secrets through ARM, bootstraps the VM through Run Command, applies the VM password, and emits a timing summary for performance tuning. Resource provider registration and the Bicep CLI latest-version check are cached per subscription in ignored `.local/cache/subscription-state.json` (see `scripts/README.md`) to skip redundant checks on reruns.
+- A matching app content hash skips VM bootstrap only when a VM Run Command also confirms the guest chat launcher exists; a newly recreated VM needs its app package even if the source hash is unchanged.
 - `automation/` contains PowerShell runbooks automatically validated and published by `scripts/deploy.ps1`.
 - `scripts/test.ps1` provides `Static`, `Validate`, `Smoke`, and `ChatDual` modes; `Validate` checks the configured image and Azure Disk Encryption extension for normal VMs or the configured attached OS disk and retained encryption for migrations, and static Bicep builds use the platform temporary directory so local and Linux CI runs behave consistently.
 - `scripts/scan.ps1` validates generated IaC security invariants.
@@ -20,12 +21,14 @@ This repository deploys a private Azure AI Foundry learning environment with sta
 - `scripts/rdp.ps1` updates the deployed jumpbox NSG with explicit RDP allow rules from `rdpAllowedPublicIpAddress`, `rdpAllowedIpCidrs`, an explicit IP/CIDR, or the current public IP.
 - `scripts/show.ps1` uses VM Run Command and the VM managed identity to read the admin password through the private Key Vault endpoint without workstation data-plane access or repository logging.
 - `app/` contains the managed-identity Python chat and connectivity test.
-- `.mcp.json` and `.vscode/mcp.json` register the official Bicep MCP server (`Azure.Bicep.McpServer` via `dnx`) for schema lookups, best practices, diagnostics, formatting, AVM metadata, and ARM decompilation, and the Azure MCP server (`@azure/mcp`) for live subscription reads; see `.github/instructions/bicep-mcp-server.instructions.md` and `.github/instructions/azure-mcp-server.instructions.md`.
+- `.mcp.json` and `.vscode/mcp.json` register the official Bicep MCP server (`Azure.Bicep.McpServer` via `dnx`) for schema lookups, best practices, diagnostics, formatting, AVM metadata, and ARM decompilation, and the Azure MCP server (`Azure.Mcp` NuGet package via `dnx`) for live subscription reads; npm/`npx` is not permitted for MCP servers or any other tooling; see `.github/instructions/bicep-mcp-server.instructions.md` and `.github/instructions/azure-mcp-server.instructions.md`.
 
 ## Required invariants
 
-- Keep Key Vault, Storage, Azure OpenAI, AI Hub, and AI Project public network access disabled.
-- Keep Storage shared-key access, blob public access, and Azure OpenAI local authentication disabled.
+- Keep Key Vault, Storage, Azure OpenAI, Microsoft Foundry, Azure AI Search, and Cosmos DB public network access disabled.
+- Keep Storage shared-key access, blob public access, Azure OpenAI local authentication, and Cosmos DB local key authentication disabled.
+- Keep Static Web Apps on the Free plan; it is a public static-hosting surface and must not contain secrets or private data.
+- Keep API Management on the Consumption tier when targeting the free-call allowance; it is a public API gateway surface and must not expose private backends without an explicit design.
 - Use private endpoints and private DNS for service data-plane access.
 - Use resource-scoped data-plane RBAC. The VM needs only `Key Vault Secrets User` and `Cognitive Services OpenAI User`; it does not need Storage access for bootstrap.
 - The Automation Account uses its dedicated user-assigned identity. The VM-start runbook receives Virtual Machine Contributor at VM scope, and the weekly RDP cleanup runbook receives Network Contributor at NSG scope.
@@ -35,7 +38,7 @@ This repository deploys a private Azure AI Foundry learning environment with sta
 - Do not reintroduce workstation Key Vault or Storage data-plane operations. The deployment host writes secret resources through ARM; app files reach the VM through Run Command.
 - Never print or persist VM credentials in CI logs or workspaces. Local credential output belongs only under ignored `.local/`.
 - Never rotate the VM admin password on a rerun. A new password is issued only on first deploy, when the VM is being recreated, or when `-RotateVmPassword` is passed.
-- Never remove Key Vault, networking, private DNS, Azure OpenAI, their private endpoints, or the managed identities. Only flagged components (`deployStorage`, `deployLogAnalytics`, `deployAiFoundry`, `deployVm`, `deployAutomation`, `deployPostgres`) may be removed, and `deployVm: false` must also delete the OS disk.
+- Never remove Key Vault, base networking, shared private DNS, Azure OpenAI, their private endpoints, or the managed identities. Only flagged components (`deployStorage`, `deployLogAnalytics`, `deployAiFoundry`, `deployVm`, `deployAutomation`, `deployPostgres`, `deployStaticWebApp`, `deployCosmosDb`, `deployApiManagement`) may be removed, and `deployVm: false` must also delete the OS disk.
 - Never commit user configuration. Only `variables/*.yaml.example` templates are tracked, and no other file may contain a specific user's region, prefix, object IDs, SKUs, or time zones.
 
 ## Configuration rules

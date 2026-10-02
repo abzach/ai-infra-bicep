@@ -20,14 +20,19 @@ variables:
   # the Key Vault / Azure OpenAI private endpoints.
   deployStorage: true # Deploys the Storage account, blob container, and blob private endpoint; allowed values: true, false. Must be true when deployAiFoundry is true.
   deployLogAnalytics: true # Deploys the Log Analytics workspace and resource diagnostics; allowed values: true, false. Must be true when enableAuditDiagnostics is true.
-  deployAiFoundry: true # Deploys the AI Hub, AI Project, and hub private endpoint; allowed values: true, false.
+  deployAiFoundry: true # Deploys the private Foundry account/project, Agent Service, Azure AI Search, Agent subnet, and private endpoints; allowed values: true, false. Requires deployStorage and deployCosmosDb.
   deployVm: true # Deploys the jumpbox VM with its NIC, public IP, NSG, OS disk, and auto-shutdown schedule; allowed values: true, false. Setting false also deletes the OS disk.
   deployAutomation: true # Deploys the Automation Account, its user-assigned identity, and repository runbooks; allowed values: true, false. Must be false when deployVm is false.
   deployPostgres: true # Deploys the PostgreSQL Flexible Server, its delegated subnet, and its private DNS zone (Burstable B1ms, 32 GiB, HA disabled, VNet-integrated); allowed values: true, false.
+  deployStaticWebApp: true # Deploys Azure Static Web Apps on the Free hosting plan; allowed values: true, false.
+  deployCosmosDb: true # Deploys Azure Cosmos DB for NoSQL with free tier enabled, provisioned throughput, and private endpoint; allowed values: true, false.
+  deployApiManagement: true # Deploys Azure API Management on the Consumption tier; allowed values: true, false.
+  deployAppService: true # Deploys Azure App Service (Linux) on the F1 Free plan; allowed values: true, false.
 
   vnetAddressSpace: 10.0.0.0/16 # VNet IPv4 CIDR; must contain both subnet prefixes and must not overlap connected networks.
   servicesSubnetAddressPrefix: 10.0.1.0/24 # Subnet CIDR for private endpoints and service access; must be inside vnetAddressSpace.
   vmSubnetAddressPrefix: 10.0.2.0/24 # Subnet CIDR for the jumpbox VM; must be inside vnetAddressSpace and not overlap the services subnet.
+  agentSubnetAddressPrefix: 10.0.4.0/24 # Dedicated /24 subnet for Foundry Agent Service; must be inside vnetAddressSpace, non-overlapping, and delegated only to Microsoft.App/environments.
   vmAcceleratedNetworking: true # Enables accelerated networking on the VM NIC; allowed values: true, false. The selected VM SKU must support it.
 
   containerName: chatapp # Private blob container for app artifacts; 3-63 lowercase letters, numbers, or single hyphens.
@@ -35,7 +40,7 @@ variables:
   storageContainerSoftDeleteRetentionDays: 7 # Deleted container recovery window; allowed values: 0 (disabled) or 1-365 days.
 
   keyVaultSoftDeleteRetentionDays: 7 # Deleted vault/item recovery window; allowed values: 7-90 days and cannot be changed after creation.
-  privateAiWorkspacesOnly: true # Creates private endpoints and disables public AI workspace access; allowed values: true, false.
+  privateAiWorkspacesOnly: true # Requires private endpoints while public AI workspace access remains disabled; allowed value: true.
 
   probePrompt: 'Reply with OK only.' # Prompt used by deployment smoke tests; any non-empty text is allowed.
 
@@ -47,11 +52,25 @@ variables:
   vmAutoShutdownTimeZone: 'UTC' # Windows time-zone ID used by the auto-shutdown schedule.
   vmGuestTimeZone: 'UTC' # Windows time-zone ID applied inside the jumpbox guest OS by setup.ps1; use any Windows time-zone ID.
 
+  staticWebAppLocation: eastus2 # Default Azure region for Static Web Apps; use a region supported by Microsoft.Web/staticSites.
+
   postgresSubnetAddressPrefix: 10.0.3.0/24 # Delegated subnet CIDR for the PostgreSQL Flexible Server; must be inside vnetAddressSpace and not overlap the other subnets.
   postgresAdminUsername: pgadmin # PostgreSQL Flexible Server administrator login name; 1-63 characters, cannot be a reserved PostgreSQL role name (for example azure_superuser, admin, postgres).
   postgresVersion: '16' # PostgreSQL major version; allowed values: 11, 12, 13, 14, 15, 16.
   postgresStorageSizeGB: 32 # PostgreSQL storage size in GiB; kept at 32 to stay within the Azure free-tier storage allowance.
   postgresBackupRetentionDays: 7 # PostgreSQL backup retention window; allowed values: 7-35 days.
+
+  staticWebAppSkuName: Free # Static Web Apps hosting plan SKU; allowed value: Free.
+  cosmosDbDatabaseName: appstate # Cosmos DB SQL database name; 1-63 letters, numbers, underscores, or hyphens.
+  cosmosDbContainerName: metadata # Cosmos DB SQL container name; 1-63 letters, numbers, underscores, or hyphens.
+  cosmosDbPartitionKeyPath: /pk # Cosmos DB container partition key path; single JSON property path such as /pk.
+  cosmosDbThroughput: 400 # Cosmos DB manual provisioned database throughput in RU/s; allowed range: 400-1000 to stay within free tier.
+  cosmosDbFreeTierEnabled: true # Enables the Cosmos DB free-tier entitlement when supported by the subscription; allowed values: true, false.
+  apiManagementSkuName: Consumption # API Management pricing tier; allowed value: Consumption.
+  aiSearchSkuName: standard # Azure AI Search SKU required for private Foundry Agent Service vector stores; allowed value: standard.
+  apiManagementPublisherEmail: admin@example.com # API Management publisher contact email; use a monitored address before production use.
+  apiManagementPublisherName: AI Infra # API Management publisher display name; 1-100 characters.
+  appServiceSkuName: F1 # App Service Plan SKU; allowed value: F1.
 
   automationRuntimeVersion: '7.4' # PowerShell runtime used by Automation runbooks; allowed value: 7.4.
   automationAzVersion: '12.3.0' # Az package version installed in the PowerShell runtime environment; use a version supported by Azure Automation.

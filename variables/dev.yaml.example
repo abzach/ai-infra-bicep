@@ -14,10 +14,14 @@ variables:
   # Key Vault, networking, Azure OpenAI, and the managed identities have no flag and are never removed.
   deployStorage: true # Storage account, blob container, and blob private endpoint; allowed values: true, false. Must be true when deployAiFoundry is true.
   deployLogAnalytics: true # Log Analytics workspace and resource diagnostics; allowed values: true, false. Must be true when enableAuditDiagnostics is true.
-  deployAiFoundry: true # AI Hub, AI Project, and hub private endpoint; allowed values: true, false.
+  deployAiFoundry: true # Private Foundry account/project, Agent Service, Azure AI Search, Agent subnet, and private endpoints; allowed values: true, false. Requires deployStorage and deployCosmosDb.
   deployVm: true # Jumpbox VM with NIC, public IP, NSG, OS disk, and auto-shutdown schedule; allowed values: true, false. Setting false also deletes the OS disk.
   deployAutomation: true # Automation Account, its identity, and repository runbooks; allowed values: true, false. Must be false when deployVm is false.
   deployPostgres: true # PostgreSQL Flexible Server, its delegated subnet, and its private DNS zone; allowed values: true, false.
+  deployStaticWebApp: true # Azure Static Web Apps on the Free hosting plan; allowed values: true, false.
+  deployCosmosDb: true # Azure Cosmos DB for NoSQL with free tier enabled, provisioned throughput, and private endpoint; allowed values: true, false.
+  deployApiManagement: true # Azure API Management on the Consumption tier; allowed values: true, false.
+  deployAppService: true # Azure App Service (Linux) on the F1 Free plan; allowed values: true, false.
 
   # Admins
   # Supply array of Entra ID object IDs (users or security groups) for role assignments.
@@ -25,7 +29,7 @@ variables:
   # - Key Vault: Key Vault Administrator, Key Vault Secrets Officer
   # - Storage Account: Storage Blob Data Owner, Storage Account Contributor
   # - Azure OpenAI: Cognitive Services OpenAI Contributor, Cognitive Services Contributor
-  # - AI Hub and AI Project: Azure AI Administrator
+  # - Foundry account and project: Foundry Owner, Foundry Project Manager
   # - Jumpbox VM: Virtual Machine Administrator Login
   # - Log Analytics: Log Analytics Contributor, Monitoring Contributor
   # - Core and network resource groups: Contributor, User Access Administrator
@@ -50,6 +54,16 @@ variables:
   skuName: Standard_LRS # Storage redundancy SKU; allowed values: Standard_LRS, Standard_GRS, Standard_ZRS.
   storageAccessTier: Hot # Blob access tier; allowed values: Hot, Cool.
   postgresSkuName: Standard_B1ms # PostgreSQL Flexible Server compute SKU; Standard_B1ms (Burstable) keeps the server within the Azure free-tier compute allowance.
+  postgresSubnetAddressPrefix: 10.0.3.0/24 # Delegated subnet CIDR for PostgreSQL Flexible Server; must not overlap the VNet or services and VM subnets.
+  postgresAdminUsername: pgadmin # PostgreSQL administrator login name; use a non-reserved identifier.
+  postgresVersion: '16' # PostgreSQL major version; allowed values: 11, 12, 13, 14, 15, 16.
+  postgresStorageSizeGB: 32 # PostgreSQL storage size in GiB; 32 keeps the server within the Azure free-tier storage allowance.
+  postgresBackupRetentionDays: 7 # PostgreSQL backup retention in days; allowed range: 7-35.
+  staticWebAppLocation: eastus2 # Azure region for Static Web Apps; use a region supported by Microsoft.Web/staticSites, such as eastus2 or westus2.
+  cosmosDbFreeTierEnabled: true # Enables the Cosmos DB free-tier entitlement when supported by the subscription; set false for Internal subscriptions.
+  staticWebAppSkuName: Free # Static Web Apps hosting plan SKU; allowed value: Free.
+  cosmosDbThroughput: 400 # Cosmos DB manual provisioned database throughput in RU/s; allowed range: 400-1000 to stay within free tier.
+  apiManagementSkuName: Consumption # API Management pricing tier; allowed value: Consumption.
   modelDeployments: # Ordered model deployments; the first two are the chat app primary and secondary, and more entries may be added.
     - deploymentName: gpt-4-1-mini # Unique deployment alias used by clients.
       modelName: gpt-4.1-mini # Exact model catalog name available in location.
@@ -64,7 +78,8 @@ variables:
   openaiApiVersion: 2025-01-01-preview # Data-plane API version used by the chat app and probes.
   mlApiVersion: 2025-06-01 # ARM API version used by deployment cleanup for Foundry/ML workspaces.
 
-  vmSize: Standard_L2as_v4 # Azure VM SKU; must be available in the configured location and support Spot because vmUseSpot is true.
+  vmSize: Standard_D2ads_v5 # Azure VM SKU; must be available in the configured location, support Spot because vmUseSpot is true, and support Azure Disk Encryption (no L-family, v6 with temp disk, or v7+).
+  agentRecoverySubnetAddressPrefix: '' # Optional unused /24 CIDR inside vnetAddressSpace for a replacement Agent Service subnet after a stale service link; leave empty normally.
   vmImageSku: win11-24h2-ent-cpc-m365 # Marketplace image SKU used with the shared publisher, offer, and version.
   vmOsDiskStorageAccountType: Standard_LRS # Managed OS disk SKU; allowed values: Standard_LRS, StandardSSD_LRS, Premium_LRS.
   vmPublicIpDnsNameLabel: '' # Optional Public IP DNS label; empty disables public DNS, otherwise use 1-63 lowercase letters, numbers, or hyphens (for example az-swe-aifp).
@@ -82,9 +97,10 @@ variables:
   # Automation
   # Other template-managed RBAC role names:
   # - Deploying identity: Key Vault Secrets Officer on Key Vault
-  # - AI Hub managed identity: Storage Blob Data Contributor on Storage Account, Key Vault Secrets User on Key Vault, Cognitive Services OpenAI User on Azure OpenAI
+  # - Foundry project identity: Cognitive Services User, Storage Blob Data Contributor/Owner, Cosmos DB Operator/Data Contributor, Search Index Data Contributor, Search Service Contributor
   # - VM managed identity: Key Vault Secrets User on Key Vault, Cognitive Services OpenAI User on Azure OpenAI
   # - Automation managed identity: Virtual Machine Contributor on Jumpbox VM
+  # - Shared managed identity: Cosmos DB Built-in Data Contributor on Cosmos DB SQL data plane
   serviceConnection: '<REPLACE_WITH_SERVICE_CONNECTION_NAME>' # Azure DevOps service connection used by pipelines; ignored by local deploy.ps1.
   githubAzureClientIdSecretName: AZURE_CLIENT_ID # GitHub secret name containing the OIDC application/client ID; change to values such as AZURE_CLIENT_ID_01 for per-environment credentials.
   githubAzureTenantIdSecretName: AZURE_TENANT_ID # GitHub secret name containing the Microsoft Entra tenant ID; change to values such as AZURE_TENANT_ID_01 for per-environment credentials.

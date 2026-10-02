@@ -15,6 +15,8 @@ This repository deploys a private Azure AI Foundry learning environment with Bic
 - Update both `README.md` and `index.md` files when a maintained folder's responsibilities or inventory changes. Docs must stay current with the code that changed in the same change; see `instructions/documentation-sync.instructions.md`. Treat a stale doc as a bug in the change that caused it.
 - For Bicep resource schemas, best practices, diagnostics, formatting, AVM lookup, or ARM decompilation, use the official Bicep MCP server registered in `.mcp.json`/`.vscode/mcp.json`; see `instructions/bicep-mcp-server.instructions.md` for which tool applies to which task.
 - For live subscription facts — failed deployment diagnosis, supported SKUs/quotas/regions, RBAC and private-network verification, and deployment-flag drift — use the Azure MCP server registered in the same files; see `instructions/azure-mcp-server.instructions.md`. Use it read-first and pair it with the Bicep MCP server before changing templates.
+- Never use npm, `npx`, or npm registry URLs for MCP servers, tooling, scripts, pipelines, or docs; IT policy forbids it. Use NuGet/`dnx`, the Azure CLI, or PowerShell instead.
+- Never reference or contact `nuget.org`/`api.nuget.org` directly; IT blocks it. Let `dnx`/`dotnet` use the machine's configured NuGet feed.
 - Every file under `instructions/*.instructions.md` is self-improving: if a task needs steps beyond what a skill documents, update that skill file with what you learned before finishing the task.
 
 ## Required validation

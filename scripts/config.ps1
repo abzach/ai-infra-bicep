@@ -34,7 +34,7 @@ function Convert-ConfigScalar {
 #
 #   Returns a pscustomobject with properties:
 #     workloadResourceGroupName, foundationResourceGroupName, storageAccountName,
-#     keyVaultName, openAiAccountName, hubName, projectName,
+#     keyVaultName, openAiAccountName, foundryAccountName, hubName, projectName,
 #     sharedManagedIdentityName, automationAccountName, vnetName, vmName, lawWorkspaceName
 # ---------------------------------------------------------------------------
 function Get-EnterpriseResourceNames {
@@ -58,8 +58,10 @@ function Get-EnterpriseResourceNames {
         storageAccountName       = "st${n}${env}${raw}${instanceRaw}"
         keyVaultName             = "kv-${n}-${env}${sfx}-${instance}"
         openAiAccountName        = "oai-${n}-${env}${sfx}-${instance}"
+        foundryAccountName       = "ai-${n}-${env}${sfx}-${instance}"
         hubName                  = "hub-${n}-${env}-${instance}"
         projectName              = "proj-${n}-${env}-${instance}"
+        aiSearchName             = "srch-${n}-${env}${sfx}-${instance}"
         sharedManagedIdentityName = "mi-${n}-${env}-${instance}"
         automationAccountName    = "aa-${n}-${env}-${instance}"
         vmStartScheduleName      = 'schedule-vm-start-daily'
@@ -68,6 +70,11 @@ function Get-EnterpriseResourceNames {
         vmName                   = "vm-${n}-${env}-${instance}"
         lawWorkspaceName         = "law-${n}-${env}-${instance}"
         postgresServerName       = "psql-${n}-${env}${sfx}-${instance}"
+        staticWebAppName         = "stapp-${n}-${env}${sfx}-${instance}"
+        cosmosDbAccountName      = "cosmos-${n}-${env}${sfx}-${instance}"
+        apiManagementServiceName = "apim-${n}-${env}${sfx}-${instance}"
+        appServicePlanName       = "asp-${n}-${env}-${instance}"
+        appServiceName           = "web-${n}-${env}${sfx}-${instance}"
     }
 }
 
@@ -295,6 +302,10 @@ In CI, supply the full file content through the '$ContentEnvVarName' environment
         $config['vmExistingOsDiskId'] = ''
     }
 
+    if (-not $config.Contains('agentRecoverySubnetAddressPrefix')) {
+        $config['agentRecoverySubnetAddressPrefix'] = ''
+    }
+
     if (-not $config.Contains('rdpAllowedIpCidrs')) {
         $config['rdpAllowedIpCidrs'] = @()
     }
@@ -473,6 +484,7 @@ In CI, supply the full file content through the '$ContentEnvVarName' environment
         'vnetAddressSpace',
         'servicesSubnetAddressPrefix',
         'vmSubnetAddressPrefix',
+        'agentSubnetAddressPrefix',
         'vmAcceleratedNetworking',
         'skuName',
         'storageAccessTier',
@@ -502,12 +514,28 @@ In CI, supply the full file content through the '$ContentEnvVarName' environment
         'deployVm',
         'deployAutomation',
         'deployPostgres',
+        'deployStaticWebApp',
+        'deployCosmosDb',
+        'deployApiManagement',
+        'deployAppService',
         'postgresSubnetAddressPrefix',
         'postgresAdminUsername',
         'postgresSkuName',
         'postgresVersion',
         'postgresStorageSizeGB',
         'postgresBackupRetentionDays',
+        'staticWebAppLocation',
+        'staticWebAppSkuName',
+        'cosmosDbDatabaseName',
+        'cosmosDbContainerName',
+        'cosmosDbPartitionKeyPath',
+        'cosmosDbThroughput',
+        'cosmosDbFreeTierEnabled',
+        'apiManagementSkuName',
+        'aiSearchSkuName',
+        'apiManagementPublisherEmail',
+        'apiManagementPublisherName',
+        'appServiceSkuName',
         'automationRuntimeVersion',
         'automationAzVersion',
         'vmStartScheduleEnabled',
@@ -564,6 +592,7 @@ In CI, supply the full file content through the '$ContentEnvVarName' environment
         'storageContainerSoftDeleteRetentionDays',
         'keyVaultSoftDeleteRetentionDays',
         'vmSpotMaxPrice',
+        'cosmosDbThroughput',
         'logAnalyticsRetentionDays'
     )
     $invalidIntegerKeys = [System.Collections.Generic.List[string]]::new()
@@ -588,6 +617,10 @@ In CI, supply the full file content through the '$ContentEnvVarName' environment
         skuName = @('Standard_LRS', 'Standard_GRS', 'Standard_ZRS')
         storageAccessTier = @('Hot', 'Cool')
         vmOsDiskStorageAccountType = @('Standard_LRS', 'StandardSSD_LRS', 'Premium_LRS')
+        staticWebAppSkuName = @('Free')
+        apiManagementSkuName = @('Consumption')
+        aiSearchSkuName = @('standard')
+        appServiceSkuName = @('F1')
     }
     foreach ($key in $allowedValues.Keys) {
         if ([string]$config[$key] -notin $allowedValues[$key]) {
@@ -616,6 +649,12 @@ In CI, supply the full file content through the '$ContentEnvVarName' environment
         'deployAiFoundry',
         'deployVm',
         'deployAutomation',
+        'deployPostgres',
+        'deployStaticWebApp',
+        'deployCosmosDb',
+        'deployApiManagement',
+        'deployAppService',
+        'cosmosDbFreeTierEnabled',
         'vmStartScheduleEnabled',
         'rdpDeployerCleanupScheduleEnabled',
         'privateAiWorkspacesOnly',
@@ -626,6 +665,9 @@ In CI, supply the full file content through the '$ContentEnvVarName' environment
             throw "Invalid boolean value '$($config[$key])' for '$key'. Allowed values: true, false"
         }
     }
+    if ([string]$config['privateAiWorkspacesOnly'] -ne 'true') {
+        throw "privateAiWorkspacesOnly must be true because Foundry public network access is disabled and the private endpoint is required."
+    }
 
     # ---- Validate deployment-flag dependencies ----
     # Key Vault, the virtual network, Azure OpenAI, and the managed identities have no flag:
@@ -633,7 +675,10 @@ In CI, supply the full file content through the '$ContentEnvVarName' environment
     $isFlagEnabled = { param([string]$Key) [string]$config[$Key] -eq 'true' }
 
     if ((& $isFlagEnabled 'deployAiFoundry') -and -not (& $isFlagEnabled 'deployStorage')) {
-        throw "deployAiFoundry requires deployStorage because the AI Hub workspace needs a backing Storage account."
+        throw "deployAiFoundry requires deployStorage for Agent Service file storage."
+    }
+    if ((& $isFlagEnabled 'deployAiFoundry') -and -not (& $isFlagEnabled 'deployCosmosDb')) {
+        throw "deployAiFoundry requires deployCosmosDb for Agent Service thread storage."
     }
     if ((& $isFlagEnabled 'enableAuditDiagnostics') -and -not (& $isFlagEnabled 'deployLogAnalytics')) {
         throw "enableAuditDiagnostics requires deployLogAnalytics because diagnostics need a workspace destination."
@@ -662,6 +707,24 @@ In CI, supply the full file content through the '$ContentEnvVarName' environment
     }
     if ([int]$config['logAnalyticsRetentionDays'] -lt 30 -or [int]$config['logAnalyticsRetentionDays'] -gt 730) {
         throw "logAnalyticsRetentionDays must be 30-730"
+    }
+    if ([int]$config['cosmosDbThroughput'] -lt 400 -or [int]$config['cosmosDbThroughput'] -gt 1000) {
+        throw "cosmosDbThroughput must be 400-1000 to stay within the Cosmos DB free-tier provisioned throughput allowance"
+    }
+    if ([string]$config['cosmosDbDatabaseName'] -notmatch '^[A-Za-z0-9][A-Za-z0-9_-]{0,62}$') {
+        throw "cosmosDbDatabaseName must use 1-63 letters, numbers, underscores, or hyphens, starting with a letter or number"
+    }
+    if ([string]$config['cosmosDbContainerName'] -notmatch '^[A-Za-z0-9][A-Za-z0-9_-]{0,62}$') {
+        throw "cosmosDbContainerName must use 1-63 letters, numbers, underscores, or hyphens, starting with a letter or number"
+    }
+    if ([string]$config['cosmosDbPartitionKeyPath'] -notmatch '^/[A-Za-z0-9_-]+$') {
+        throw "cosmosDbPartitionKeyPath must be a single JSON property path such as /pk"
+    }
+    if ([string]$config['apiManagementPublisherEmail'] -notmatch '^[^@\s]+@[^@\s]+\.[^@\s]+$') {
+        throw "apiManagementPublisherEmail must be an email address"
+    }
+    if ([string]$config['apiManagementPublisherName'] -notmatch '^.{1,100}$') {
+        throw "apiManagementPublisherName must be 1-100 characters"
     }
     $modelDeployments = @($config['modelDeployments'])
     if ($modelDeployments.Count -lt 2) {
@@ -722,6 +785,20 @@ In CI, supply the full file content through the '$ContentEnvVarName' environment
     $resourceNames = Get-EnterpriseResourceNames -BaseName $config['baseName'] -EnvironmentSuffix $EnvironmentSuffix -ResourceGroupInstance $config['resourceGroupInstance'] -NameSuffix $NameSuffix
     foreach ($property in $resourceNames.PSObject.Properties) {
         $config[$property.Name] = $property.Value
+    }
+
+    $existingOsDiskId = [string]$config['vmExistingOsDiskId']
+    if ([string]::IsNullOrWhiteSpace($existingOsDiskId) -and [string]$config['vmSize'] -match '(?i)^Standard_L\d') {
+        throw "vmSize '$($config['vmSize'])' is an L-family size, which Azure Disk Encryption does not support. Choose another size such as Standard_D2ads_v5."
+    }
+    if (-not [string]::IsNullOrWhiteSpace($existingOsDiskId)) {
+        $diskIdMatch = [regex]::Match($existingOsDiskId, '(?i)^/subscriptions/[^/]+/resourceGroups/([^/]+)/providers/Microsoft\.Compute/disks/[^/]+$')
+        if (-not $diskIdMatch.Success) {
+            throw "vmExistingOsDiskId must be a managed disk resource ID."
+        }
+        if ($diskIdMatch.Groups[1].Value -ne $resourceNames.foundationResourceGroupName) {
+            throw "vmExistingOsDiskId must reference a disk in '$($resourceNames.foundationResourceGroupName)' because the jumpbox VM is deployed to the foundation resource group."
+        }
     }
 
     return [pscustomobject]$config

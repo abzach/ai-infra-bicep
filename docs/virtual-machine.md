@@ -14,7 +14,7 @@ The Windows 11 Enterprise Jumpbox VM operates inside the private virtual network
 
 - **Resource Name:** `vm-<baseName>-<environmentSuffix>`
 - **Resource Type:** `Microsoft.Compute/virtualMachines@2024-03-01`
-- **Size:** `vmSize` from your environment YAML
+- **Size:** `vmSize` from your environment YAML; it must support Azure Disk Encryption, so `scripts/config.ps1` rejects L-family (storage-optimized) sizes for image-based deployments
 - **Public DNS Name:** Optional `vmPublicIpDnsNameLabel` on the VM public IP; for example `az-swe-aifp` in `swedencentral` creates `az-swe-aifp.swedencentral.cloudapp.azure.com`
 
 ## Important Configuration Settings
@@ -41,11 +41,11 @@ The Windows 11 Enterprise Jumpbox VM operates inside the private virtual network
 
 `bicep/modules/vm.bicep` accepts an optional `existingOsDiskId` (and `osType`, default `Windows`) parameter. When set, the VM is created with `storageProfile.osDisk.createOption: 'Attach'` against that existing managed disk instead of `FromImage`, and the `osProfile` block (computer name, admin username/password, patch settings) is omitted entirely — ARM rejects `osProfile` together with `createOption: Attach`.
 
-This exists specifically to let a previously-deployed VM's OS disk survive a resource-group rename: detach the disk from the old VM (`az vm update --set storageProfile.osDisk.deleteOption=Detach` then `az vm delete`), move the orphaned disk into the new resource group (`az resource move`), then redeploy with `vmExistingOsDiskId` set to the disk's resource ID.
+This exists specifically to let a previously-deployed VM's OS disk survive a resource-group rename: detach the disk from the old VM (`az vm update --set storageProfile.osDisk.deleteOption=Detach` then `az vm delete`), move the orphaned disk into the new resource group (`az resource move`), then redeploy with `vmExistingOsDiskId` set to the disk's resource ID. The VM is deployed to the foundation resource group, so `scripts/config.ps1` rejects a `vmExistingOsDiskId` in any other group; `scripts/deploy.ps1` performs this delete/move automatically for a VM still in the workload group.
 
 **Important:** because Attach mode skips `osProfile`, the VM's real admin credential remains whatever was already set on the disk — it is **not** the password `deploy.ps1` generates and stores in Key Vault. Once migrated this way, `vmExistingOsDiskId` should stay set permanently; do not clear it on a later deploy, or the VM would need to be recreated `FromImage` again (losing the disk's state).
 
-Attach mode also omits the `AzureDiskEncryption` extension. The migrated disk retains its existing encryption state; applying a new BitLocker workflow through a different Key Vault can fail against an attached OS disk. Image-based VM deployments continue to configure Azure Disk Encryption.
+Attach mode also omits the `AzureDiskEncryption` extension. The migrated disk retains its existing encryption state and remains dependent on the original Azure Disk Encryption Key Vault, BEK secret version, and private network path. Preserve or recover those dependencies before starting the reattached VM; deleting the source vault prevents the OS disk from unlocking and causes `DiskEncryptionInternalError`. Applying a new BitLocker workflow through a different Key Vault can also fail against an attached OS disk. Image-based VM deployments continue to configure Azure Disk Encryption.
 
 ## Virtual Machine Extensions
 

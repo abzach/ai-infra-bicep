@@ -50,6 +50,6 @@ Heartbeat
 ## Related Documentation
 
 - [Azure OpenAI Documentation](azure-openai.md)
-- [AI Hub Documentation](ai-hub.md)
+- [Microsoft Foundry Account](foundry-account.md)
 - [Virtual Machine Documentation](virtual-machine.md)
 - [Documentation Index](index.md)

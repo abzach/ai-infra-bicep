@@ -5,6 +5,25 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
+function Resolve-TemplateExpressionValue {
+    param(
+        [Parameter(Mandatory)] [object] $Value,
+        [Parameter(Mandatory)] [object] $Template
+    )
+
+    $parameterMatch = [regex]::Match([string] $Value, "^\[parameters\('([^']+)'\)\]$")
+    if (-not $parameterMatch.Success) {
+        return $Value
+    }
+
+    $parameter = $Template.parameters.PSObject.Properties[$parameterMatch.Groups[1].Value]
+    if ($null -eq $parameter -or $null -eq $parameter.Value.PSObject.Properties['defaultValue']) {
+        return $null
+    }
+
+    return $parameter.Value.defaultValue
+}
+
 function Get-TemplateResources {
     param([Parameter(Mandatory)] [object] $Template)
 
@@ -28,11 +47,26 @@ function Get-TemplateResources {
         }
 
         foreach ($resource in $resourceItems) {
+            $resource | Add-Member -NotePropertyName '_scanTemplate' -NotePropertyValue $CurrentTemplate -Force
             $resources.Add($resource)
             $propertiesProperty = $resource.PSObject.Properties['properties']
             if ($null -ne $propertiesProperty) {
                 $nestedTemplateProperty = $propertiesProperty.Value.PSObject.Properties['template']
                 if ($null -ne $nestedTemplateProperty) {
+                    $nestedParametersProperty = $propertiesProperty.Value.PSObject.Properties['parameters']
+                    if ($null -ne $nestedParametersProperty -and $null -ne $nestedTemplateProperty.Value.PSObject.Properties['parameters']) {
+                        foreach ($nestedParameter in $nestedTemplateProperty.Value.parameters.PSObject.Properties) {
+                            $passedParameter = $nestedParametersProperty.Value.PSObject.Properties[$nestedParameter.Name]
+                            if ($null -eq $passedParameter -or $null -eq $passedParameter.Value.PSObject.Properties['value']) {
+                                continue
+                            }
+
+                            $resolvedValue = Resolve-TemplateExpressionValue -Value $passedParameter.Value.value -Template $CurrentTemplate
+                            if ($null -ne $resolvedValue) {
+                                $nestedParameter.Value | Add-Member -NotePropertyName defaultValue -NotePropertyValue $resolvedValue -Force
+                            }
+                        }
+                    }
                     & $walkTemplate $nestedTemplateProperty.Value
                 }
             }
@@ -41,6 +75,20 @@ function Get-TemplateResources {
 
     & $walkTemplate $Template
     return $resources
+}
+
+function Get-ResourceScanTemplate {
+    param(
+        [Parameter(Mandatory)] [object] $Resource,
+        [Parameter(Mandatory)] [object] $FallbackTemplate
+    )
+
+    $scanTemplateProperty = $Resource.PSObject.Properties['_scanTemplate']
+    if ($null -ne $scanTemplateProperty -and $null -ne $scanTemplateProperty.Value) {
+        return $scanTemplateProperty.Value
+    }
+
+    return $FallbackTemplate
 }
 
 function Get-ResourcesOfType {
@@ -80,13 +128,48 @@ function Resolve-BooleanTemplateValue {
         return $Value
     }
 
-    $parameterMatch = [regex]::Match([string] $Value, "^\[parameters\('([^']+)'\)\]$")
-    if (-not $parameterMatch.Success) {
-        return $false
+    $resolvedValue = Resolve-TemplateExpressionValue -Value $Value -Template $Template
+    if ($resolvedValue -is [bool]) {
+        return $resolvedValue
     }
 
-    $parameter = $Template.parameters.PSObject.Properties[$parameterMatch.Groups[1].Value]
-    return $null -ne $parameter -and $parameter.Value.defaultValue -eq $true
+    return $false
+}
+
+function Resolve-StringTemplateValue {
+    param(
+        [Parameter(Mandatory)] [object] $Value,
+        [Parameter(Mandatory)] [object] $Template
+    )
+
+    $resolvedValue = Resolve-TemplateExpressionValue -Value $Value -Template $Template
+    if ($null -eq $resolvedValue) {
+        return ''
+    }
+
+    return [string]$resolvedValue
+}
+
+function Resolve-IntegerTemplateValue {
+    param(
+        [Parameter(Mandatory)] [object] $Value,
+        [Parameter(Mandatory)] [object] $Template
+    )
+
+    if ($Value -is [int]) {
+        return $Value
+    }
+
+    $resolvedValue = Resolve-TemplateExpressionValue -Value $Value -Template $Template
+    if ($null -eq $resolvedValue) {
+        return $null
+    }
+
+    if ([string]$resolvedValue -notmatch '^-?\d+$') {
+        return $null
+    }
+
+    return [int]$resolvedValue
 }
 
 if (-not (Test-Path -Path $TemplatePath -PathType Leaf)) {
@@ -121,18 +204,40 @@ foreach ($vault in $vaults) {
     Test-Rule -Condition ($vault.properties.networkAcls.defaultAction -eq 'Deny') -Message 'Key Vault network ACL defaults to deny.' -Failures $failures
 }
 
-$openAiAccounts = Get-ResourcesOfType -Resources $resources -Type 'Microsoft.CognitiveServices/accounts'
-Test-Rule -Condition ($openAiAccounts.Count -gt 0) -Message 'An Azure OpenAI account is defined.' -Failures $failures
+$cognitiveServicesAccounts = @(Get-ResourcesOfType -Resources $resources -Type 'Microsoft.CognitiveServices/accounts')
+$openAiAccounts = @($cognitiveServicesAccounts | Where-Object { $_.kind -eq 'OpenAI' })
+Test-Rule -Condition ($openAiAccounts.Count -eq 1) -Message 'An Azure OpenAI account is defined.' -Failures $failures
 foreach ($openAiAccount in $openAiAccounts) {
     Test-Rule -Condition ($openAiAccount.properties.publicNetworkAccess -eq 'Disabled') -Message 'Azure OpenAI public network access is disabled.' -Failures $failures
     Test-Rule -Condition (Resolve-BooleanTemplateValue -Value $openAiAccount.properties.disableLocalAuth -Template $template) -Message 'Azure OpenAI local authentication is disabled.' -Failures $failures
 }
 
-$workspaces = Get-ResourcesOfType -Resources $resources -Type 'Microsoft.MachineLearningServices/workspaces'
-Test-Rule -Condition ($workspaces.Count -ge 2) -Message 'AI Hub and Project workspaces are defined.' -Failures $failures
-foreach ($workspace in $workspaces) {
-    Test-Rule -Condition ($workspace.properties.publicNetworkAccess -eq 'Disabled') -Message "AI workspace '$($workspace.name)' public network access is disabled." -Failures $failures
+$foundryAccounts = @($cognitiveServicesAccounts | Where-Object { $_.kind -eq 'AIServices' })
+Test-Rule -Condition ($foundryAccounts.Count -eq 1) -Message 'A Microsoft Foundry AIServices account is defined.' -Failures $failures
+foreach ($foundryAccount in $foundryAccounts) {
+    Test-Rule -Condition ($foundryAccount.properties.publicNetworkAccess -eq 'Disabled') -Message 'Foundry public network access is disabled.' -Failures $failures
+    Test-Rule -Condition (Resolve-BooleanTemplateValue -Value $foundryAccount.properties.disableLocalAuth -Template $template) -Message 'Foundry local authentication is disabled.' -Failures $failures
+    Test-Rule -Condition ($foundryAccount.properties.networkAcls.defaultAction -eq 'Deny') -Message 'Foundry network ACL defaults to deny.' -Failures $failures
 }
+
+$foundryProjects = @(Get-ResourcesOfType -Resources $resources -Type 'Microsoft.CognitiveServices/accounts/projects')
+Test-Rule -Condition ($foundryProjects.Count -eq 1) -Message 'A Microsoft Foundry child project is defined.' -Failures $failures
+
+$foundryCapabilityHosts = @(Get-ResourcesOfType -Resources $resources -Type 'Microsoft.CognitiveServices/accounts/projects/capabilityHosts')
+Test-Rule -Condition ($foundryCapabilityHosts.Count -eq 1) -Message 'A Microsoft Foundry Agent capability host is defined.' -Failures $failures
+foreach ($foundryCapabilityHost in $foundryCapabilityHosts) {
+    Test-Rule -Condition ($foundryCapabilityHost.properties.capabilityHostKind -eq 'Agents') -Message 'Foundry capability host kind is Agents.' -Failures $failures
+}
+
+$searchServices = @(Get-ResourcesOfType -Resources $resources -Type 'Microsoft.Search/searchServices')
+Test-Rule -Condition ($searchServices.Count -eq 1) -Message 'An Azure AI Search service is defined.' -Failures $failures
+foreach ($searchService in $searchServices) {
+    Test-Rule -Condition ($searchService.properties.publicNetworkAccess -eq 'disabled') -Message 'Azure AI Search public network access is disabled.' -Failures $failures
+    Test-Rule -Condition (Resolve-BooleanTemplateValue -Value $searchService.properties.disableLocalAuth -Template $template) -Message 'Azure AI Search local authentication is disabled.' -Failures $failures
+}
+
+$compiledTemplateText = [string]::Join("`n", @($templateJson))
+Test-Rule -Condition ($compiledTemplateText -match 'Microsoft\.App/environments') -Message 'A dedicated subnet is delegated to Microsoft.App/environments for Foundry Agent Service.' -Failures $failures
 
 $automationAccounts = @(Get-ResourcesOfType -Resources $resources -Type 'Microsoft.Automation/automationAccounts')
 Test-Rule -Condition ($automationAccounts.Count -eq 1) -Message 'One Automation Account is defined.' -Failures $failures
@@ -158,6 +263,61 @@ foreach ($postgresServer in $postgresServers) {
     Test-Rule -Condition (-not [string]::IsNullOrWhiteSpace([string]$postgresServer.properties.network.delegatedSubnetResourceId)) -Message 'PostgreSQL Flexible Server is integrated into the VNet through a delegated subnet (no public endpoint).' -Failures $failures
 }
 
+$staticWebApps = @(Get-ResourcesOfType -Resources $resources -Type 'Microsoft.Web/staticSites')
+Test-Rule -Condition ($staticWebApps.Count -eq 1) -Message 'A Static Web App is defined.' -Failures $failures
+foreach ($staticWebApp in $staticWebApps) {
+    $staticWebAppTemplate = Get-ResourceScanTemplate -Resource $staticWebApp -FallbackTemplate $template
+    $staticWebAppSkuName = Resolve-StringTemplateValue -Value $staticWebApp.sku.name -Template $staticWebAppTemplate
+    $staticWebAppSkuTier = Resolve-StringTemplateValue -Value $staticWebApp.sku.tier -Template $staticWebAppTemplate
+    Test-Rule -Condition ($staticWebAppSkuName -eq 'Free' -and $staticWebAppSkuTier -eq 'Free') -Message 'Static Web App uses the Free hosting plan.' -Failures $failures
+}
+
+$cosmosAccounts = @(Get-ResourcesOfType -Resources $resources -Type 'Microsoft.DocumentDB/databaseAccounts')
+Test-Rule -Condition ($cosmosAccounts.Count -eq 1) -Message 'A Cosmos DB account is defined.' -Failures $failures
+foreach ($cosmosAccount in $cosmosAccounts) {
+    Test-Rule -Condition ($cosmosAccount.properties.enableFreeTier -in @($true, $false)) -Message 'Cosmos DB free-tier setting is explicit.' -Failures $failures
+    Test-Rule -Condition ($cosmosAccount.properties.publicNetworkAccess -eq 'Disabled') -Message 'Cosmos DB public network access is disabled.' -Failures $failures
+    Test-Rule -Condition ($cosmosAccount.properties.disableLocalAuth -eq $true) -Message 'Cosmos DB local key authentication is disabled.' -Failures $failures
+}
+
+$cosmosDatabases = @(Get-ResourcesOfType -Resources $resources -Type 'Microsoft.DocumentDB/databaseAccounts/sqlDatabases')
+Test-Rule -Condition ($cosmosDatabases.Count -eq 1) -Message 'A Cosmos DB SQL database is defined.' -Failures $failures
+foreach ($cosmosDatabase in $cosmosDatabases) {
+    $cosmosDatabaseTemplate = Get-ResourceScanTemplate -Resource $cosmosDatabase -FallbackTemplate $template
+    $throughput = Resolve-IntegerTemplateValue -Value $cosmosDatabase.properties.options.throughput -Template $cosmosDatabaseTemplate
+    Test-Rule -Condition ($null -ne $throughput -and $throughput -ge 400 -and $throughput -le 1000) -Message 'Cosmos DB uses manual provisioned throughput within the free-tier RU/s allowance.' -Failures $failures
+}
+
+$cosmosContainers = @(Get-ResourcesOfType -Resources $resources -Type 'Microsoft.DocumentDB/databaseAccounts/sqlDatabases/containers')
+Test-Rule -Condition ($cosmosContainers.Count -eq 1) -Message 'A Cosmos DB SQL container is defined.' -Failures $failures
+foreach ($cosmosContainer in $cosmosContainers) {
+    Test-Rule -Condition ($cosmosContainer.properties.resource.partitionKey.paths.Count -eq 1) -Message 'Cosmos DB container has a partition key.' -Failures $failures
+}
+
+$apiManagementServices = @(Get-ResourcesOfType -Resources $resources -Type 'Microsoft.ApiManagement/service')
+Test-Rule -Condition ($apiManagementServices.Count -eq 1) -Message 'An API Management service is defined.' -Failures $failures
+foreach ($apiManagementService in $apiManagementServices) {
+    $apiManagementTemplate = Get-ResourceScanTemplate -Resource $apiManagementService -FallbackTemplate $template
+    $apiManagementSkuName = Resolve-StringTemplateValue -Value $apiManagementService.sku.name -Template $apiManagementTemplate
+    Test-Rule -Condition ($apiManagementSkuName -eq 'Consumption' -and $apiManagementService.sku.capacity -eq 0) -Message 'API Management uses the Consumption tier.' -Failures $failures
+}
+
+$appServicePlans = @(Get-ResourcesOfType -Resources $resources -Type 'Microsoft.Web/serverfarms')
+Test-Rule -Condition ($appServicePlans.Count -eq 1) -Message 'An App Service plan is defined.' -Failures $failures
+foreach ($appServicePlan in $appServicePlans) {
+    $appServicePlanTemplate = Get-ResourceScanTemplate -Resource $appServicePlan -FallbackTemplate $template
+    $appServiceSkuName = Resolve-StringTemplateValue -Value $appServicePlan.sku.name -Template $appServicePlanTemplate
+    Test-Rule -Condition ($appServiceSkuName -eq 'F1' -and $appServicePlan.sku.tier -eq 'Free') -Message 'App Service plan uses the F1 Free tier.' -Failures $failures
+}
+
+$appServices = @(Get-ResourcesOfType -Resources $resources -Type 'Microsoft.Web/sites')
+Test-Rule -Condition ($appServices.Count -eq 1) -Message 'An App Service web app is defined.' -Failures $failures
+foreach ($appService in $appServices) {
+    Test-Rule -Condition ($appService.properties.httpsOnly -eq $true) -Message 'App Service requires HTTPS.' -Failures $failures
+    Test-Rule -Condition ($appService.properties.siteConfig.minTlsVersion -eq '1.2') -Message 'App Service requires TLS 1.2 or later.' -Failures $failures
+    Test-Rule -Condition ($appService.properties.siteConfig.ftpsState -eq 'Disabled') -Message 'App Service FTP/FTPS access is disabled.' -Failures $failures
+}
+
 $automationJobSchedules = @(Get-ResourcesOfType -Resources $resources -Type 'Microsoft.Automation/automationAccounts/jobSchedules')
 Test-Rule -Condition ($automationJobSchedules.Count -eq 0) -Message 'Automation job links are deferred until runbooks are published.' -Failures $failures
 
@@ -177,7 +337,7 @@ foreach ($automationNsgRole in $automationNsgRoles) {
 }
 
 $diagnosticSettings = Get-ResourcesOfType -Resources $resources -Type 'Microsoft.Insights/diagnosticSettings'
-Test-Rule -Condition ($diagnosticSettings.Count -ge 2) -Message 'Azure OpenAI and AI Hub diagnostic settings are present.' -Failures $failures
+Test-Rule -Condition ($diagnosticSettings.Count -ge 2) -Message 'Azure OpenAI and Microsoft Foundry diagnostic settings are present.' -Failures $failures
 foreach ($diagnosticSetting in $diagnosticSettings) {
     Test-Rule -Condition (-not [string]::IsNullOrWhiteSpace([string] $diagnosticSetting.properties.workspaceId)) -Message "Diagnostic setting '$($diagnosticSetting.name)' has a Log Analytics destination." -Failures $failures
 }

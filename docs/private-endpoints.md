@@ -4,7 +4,7 @@ This document describes the private endpoint architecture provisioned by `bicep/
 
 ## Architecture Overview
 
-All Azure PaaS services in this architecture (Key Vault, Storage Account, Azure OpenAI, and Azure AI Foundry Hub) have their public network access disabled. They are accessed exclusively through Azure Private Endpoints created inside the `services` subnet (`10.0.1.0/24`) of the Virtual Network.
+All private Azure PaaS data-plane services in this architecture (Key Vault, Storage, Azure OpenAI, Microsoft Foundry, Azure AI Search, and Cosmos DB) have public network access disabled. They are accessed through private endpoints in the `services` subnet.
 
 ```
        Virtual Network (10.0.0.0/16)
@@ -16,7 +16,11 @@ All Azure PaaS services in this architecture (Key Vault, Storage Account, Azure 
              ├── Storage Blob PE ───► privatelink.blob.core.windows.net
              ├── Key Vault PE   ───► privatelink.vaultcore.azure.net
              ├── OpenAI PE      ───► privatelink.openai.azure.com
-             └── AI Hub PE      ───► privatelink.api.azureml.ms
+             ├── Foundry PE     ───► privatelink.services.ai.azure.com
+             │                      privatelink.cognitiveservices.azure.com
+             │                      privatelink.openai.azure.com
+             ├── AI Search PE   ───► privatelink.search.windows.net
+             └── Cosmos DB PE   ───► privatelink.documents.azure.com
 ```
 
 ## Private Endpoint Inventory
@@ -26,7 +30,9 @@ All Azure PaaS services in this architecture (Key Vault, Storage Account, Azure 
 | `st<baseName><env><sfx>-blob-pe` | `Microsoft.Storage/storageAccounts` | `blob` | `privatelink.blob.core.windows.net` | `services` (`10.0.1.0/24`) |
 | `kv-<baseName>-<env>-<sfx>-pe` | `Microsoft.KeyVault/vaults` | `vault` | `privatelink.vaultcore.azure.net` | `services` (`10.0.1.0/24`) |
 | `oai-<baseName>-<env>-<sfx>-account-pe` | `Microsoft.CognitiveServices/accounts` | `account` | `privatelink.openai.azure.com` | `services` (`10.0.1.0/24`) |
-| `hub-<baseName>-<env>-<sfx>-pe` | `Microsoft.MachineLearningServices/workspaces` | `amlworkspace` | `privatelink.api.azureml.ms` | `services` (`10.0.1.0/24`) |
+| `ai-<baseName>-<env>-<sfx>-account-pe` | `Microsoft.CognitiveServices/accounts` | `account` | Foundry services, Cognitive Services, and OpenAI private zones | `services` (`10.0.1.0/24`) |
+| `srch-<baseName>-<env>-<sfx>-search-pe` | `Microsoft.Search/searchServices` | `searchService` | `privatelink.search.windows.net` | `services` (`10.0.1.0/24`) |
+| `cosmos-<baseName>-<env>-<sfx>-sql-pe` | `Microsoft.DocumentDB/databaseAccounts` | `Sql` | `privatelink.documents.azure.com` | `services` (`10.0.1.0/24`) |
 
 ## Important Configurations
 
@@ -48,5 +54,7 @@ All Azure PaaS services in this architecture (Key Vault, Storage Account, Azure 
 - [Key Vault Documentation](key-vault.md)
 - [Storage Account Documentation](storage-account.md)
 - [Azure OpenAI Documentation](azure-openai.md)
-- [AI Hub Documentation](ai-hub.md)
+- [Microsoft Foundry Account](foundry-account.md)
+- [Azure AI Search](ai-search.md)
+- [Cosmos DB Documentation](cosmos-db.md)
 - [Documentation Index](index.md)
